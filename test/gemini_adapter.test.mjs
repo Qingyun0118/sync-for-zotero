@@ -108,12 +108,28 @@ test("Gemini preserves display data-math as a single display equation", () => {
   assert.equal(page.adapter.extractAssistantAnswerText(page.document.querySelector("model-response")), "$$f(x)=x^2$$");
 });
 
-test("Gemini keeps file citation identity from observed accessibility metadata", () => {
-  const page = content('<model-response><message-content><div class="markdown"><p>Value 952<source-inline-chip><div class="source-inline-chip-container"><button aria-label="View source details for citation from PDF: proof.pdf. Press Enter to open sources dialog."><span class="source-title">PDF</span></button></div></source-inline-chip>.</p></div></message-content></model-response>');
-  const answer = page.adapter.extractAssistantAnswerText(page.document.querySelector("model-response"));
-  assert.match(answer, /952.*proof\.pdf/);
-  assert.ok(!answer.includes("Press Enter"));
-  assert.ok(!answer.includes("undefined"));
+for (const { name, badge } of [
+  { name: "single PDF", badge: '<button aria-label="View source details for citation from PDF: proof.pdf. Press Enter to open sources dialog."><span>PDF</span></button>' },
+  { name: "repeated PDFs", badge: '<button aria-label="View source details for citations from PDF: proof.pdf, PDF: proof.pdf, PDF: proof.pdf, and others. Press Enter to open sources dialog."><span>PDF + 3</span></button>' },
+  { name: "localized document", badge: '<button aria-label="查看文档来源"><span>文档</span></button>' },
+  { name: "image without an accessible label", badge: '<span>Image: figure.png</span>' },
+  { name: "internal source link", badge: '<a href="#source-1">Uploaded document</a>' },
+  { name: "file source link", badge: '<a href="file:///proof.pdf">PDF: proof.pdf</a>' },
+  { name: "blob source link", badge: '<a href="blob:https://gemini.google.com/proof">PDF</a>' },
+]) {
+  test(`Gemini omits ${name} badges from answers and synced history`, () => {
+    const page = content(`<div class="conversation-container" id="turn-1"><model-response><message-content><div class="markdown"><p>Value 952<source-inline-chip><div class="source-inline-chip-container">${badge}</div></source-inline-chip>.</p><p>The PDF proof.pdf reports this value [1].</p></div></message-content></model-response></div>`);
+    const original = page.document.querySelector('model-response').innerHTML;
+    const expected = 'Value 952.\n\nThe PDF proof.pdf reports this value [1].';
+    assert.equal(page.adapter.extractAssistantAnswerText(page.document.querySelector('model-response')), expected);
+    assert.equal(page.extractConversationTranscript().messages[0].text, expected);
+    assert.equal(page.document.querySelector('model-response').innerHTML, original, 'capture must not change the Gemini page');
+  });
+}
+
+test("Gemini retains only HTTP and HTTPS links from a mixed source badge", () => {
+  const page = content('<model-response><message-content><div class="markdown"><p>Result<source-inline-chip><div class="source-inline-chip-container"><button aria-label="PDF: proof.pdf">PDF + 2</button><a href="https://example.com/paper">Paper</a><a href="file:///proof.pdf">Local PDF</a><a href="http://example.com/archive">Archive</a></div></source-inline-chip>.</p></div></message-content></model-response>');
+  assert.equal(page.adapter.extractAssistantAnswerText(page.document.querySelector('model-response')), 'Result [[Paper](https://example.com/paper); [Archive](http://example.com/archive)].');
 });
 
 test("Gemini preserves web sources outside Markdown without including response controls", () => {
@@ -221,7 +237,7 @@ test("observed PDF turn extracts clean Markdown and stable role-specific keys du
   assert.deepEqual(Array.from(user.attachments), ["gemini-proof.pdf"]);
   assert.match(assistant.text, /GEMINI-PDF-73B9/);
   assert.match(assistant.text, /Cedar/);
-  assert.equal(assistant.text, 'Based on the "gemini-proof.pdf" file you provided, here is the extracted information:\n\n- **Secret marker:** GEMINI-PDF-73B9   [PDF: gemini-proof.pdf]\n- **Fictional method name:** Cedar   [PDF: gemini-proof.pdf]');
+  assert.equal(assistant.text, 'Based on the "gemini-proof.pdf" file you provided, here is the extracted information:\n\n- **Secret marker:** GEMINI-PDF-73B9\n- **Fictional method name:** Cedar');
   assert.notEqual(user.messageKey, assistant.messageKey);
   page.document.querySelector("message-content .markdown").innerHTML = '<p>Growing <strong>answer</strong> <a href="https://example.com">link</a></p><ul><li>item</li></ul>';
   const next = page.extractConversationTranscript();
@@ -764,3 +780,55 @@ test("Gemini replacement binding requires the baseline and one exact user with t
   assert.equal(resolve([prior, priorAnswer, current], { transcript: { chatUrl: "https://gemini.google.com/app/2222222222222222", messages: [prior, priorAnswer, current] } }), null);
   assert.equal(resolve([{ ...current, attachments: [] }], { baseline: { messages: [] }, expectedPdfFilename: "", expectedImageCount: 0 })?.messageKey, "current:user");
 });
+
+for (const label of ["Si and Qin...onal drift", "Si and Qin…onal drift"]) {
+  test(`Gemini upload accepts a ready middle-elided long filename: ${label}`, async () => {
+    const page = content('<input-container></input-container><images-files-uploader><input type="file"></images-files-uploader>');
+    let now = 0;
+    page.context.DataTransfer = class {
+      constructor() { this.files = []; this.items = { add: (file) => this.files.push(file) }; }
+    };
+    page.document.querySelector('input[type=file]').addEventListener('change', () => {
+      const observed = parseHTML(read('fixtures/gemini-upload-ready.html').replaceAll('gemini-proof', label)).document.querySelector('input-container');
+      page.document.querySelector('input-container').innerHTML = observed.innerHTML;
+    });
+    const receipt = await page.adapter.uploadFile(new File(['PDF'], 'Si and Qin - Representational drift.pdf', { type: 'application/pdf' }), {
+      now: () => now, wait: async (ms) => { now += ms; }, timeoutMs: 1500,
+    });
+    assert.equal(receipt.readyConfirmed, true);
+    assert.equal(receipt.filenameConfirmed, true);
+    assert.ok(now >= 750);
+    // Submitted-turn identity remains exact even when the composer elides it.
+    assert.equal(page.adapter.classifySubmittedAttachments([label + '.pdf'], 'Si and Qin - Representational drift.pdf').contractVerified, false);
+  });
+}
+
+for (const scenario of [
+  { name: 'wrong prefix', label: 'Xu and Qin...onal drift' },
+  { name: 'wrong suffix', label: 'Si and Qin...onal draft' },
+  { name: 'short ambiguous label', label: 'Si...drift' },
+  { name: 'extra elision', label: 'Si and...Qin...onal drift' },
+  { name: 'duplicate cards', label: 'Si and Qin...onal drift', duplicate: true },
+  { name: 'busy card', label: 'Si and Qin...onal drift', busy: true },
+  { name: 'failed upload', label: 'Si and Qin...onal drift', failed: true },
+  { name: 'stale card', label: 'Si and Qin...onal drift', stale: true },
+]) {
+  test(`Gemini long-name upload rejects ${scenario.name}`, async () => {
+    const observed = parseHTML(read('fixtures/gemini-upload-ready.html').replaceAll('gemini-proof', scenario.label)).document.querySelector('input-container');
+    const card = observed.querySelector('uploader-file-preview');
+    if (scenario.busy) card.insertAdjacentHTML('beforeend', '<mat-spinner role="progressbar"></mat-spinner>');
+    if (scenario.failed) card.insertAdjacentHTML('beforeend', '<div role="alert">Upload failed</div>');
+    const markup = card.outerHTML + (scenario.duplicate ? card.outerHTML : '');
+    const page = content(`<input-container>${scenario.stale ? markup : ''}</input-container><images-files-uploader><input type="file"></images-files-uploader>`);
+    page.context.DataTransfer = class {
+      constructor() { this.files = []; this.items = { add: (file) => this.files.push(file) }; }
+    };
+    page.document.querySelector('input[type=file]').addEventListener('change', () => {
+      if (!scenario.stale) page.document.querySelector('input-container').innerHTML = markup;
+    });
+    let now = 0;
+    await assert.rejects(page.adapter.uploadFile(new File(['PDF'], 'Si and Qin - Representational drift.pdf', { type: 'application/pdf' }), {
+      now: () => now, wait: async (ms) => { now += ms; }, timeoutMs: 1000,
+    }), /did not confirm a ready attachment/);
+  });
+}

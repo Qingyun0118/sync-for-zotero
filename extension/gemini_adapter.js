@@ -40,29 +40,25 @@
             el.classList.contains('katex-display') || Boolean(el.querySelector('.katex-display'));
           el.replaceWith(document.createTextNode(display ? `\n$$${latex}$$\n` : `$${latex}$`));
         });
-        // Citation chips are meaningful content, even when their only source
-        // identity is in a button's accessible label rather than visible text.
+        // Keep web source links, but omit other badges and their UI labels
+        // from captured answers. Ordinary answer text is left untouched.
         clone.querySelectorAll('source-inline-chip, .source-inline-chip-container').forEach((chip) => {
           if (!clone.contains(chip)) return; // already replaced an outer chip
-          const replacement = document.createElement('span');
           const links = Array.from(chip.querySelectorAll('a[href]')).filter((a) => /^https?:\/\//i.test(a.getAttribute('href') || ''));
-          if (links.length) {
-            links.forEach((a, index) => {
-              if (index) replacement.appendChild(document.createTextNode('; '));
-              const link = document.createElement('a');
-              link.setAttribute('href', a.getAttribute('href'));
-              link.textContent = a.getAttribute('aria-label') || a.textContent.trim() || a.getAttribute('href');
-              replacement.appendChild(link);
-            });
-          } else {
-            const label = chip.querySelector('[aria-label]')?.getAttribute('aria-label') || '';
-            const source = label.match(/^View source details for citation from (.+?)\. Press Enter to open sources dialog\.$/s)?.[1];
-            replacement.textContent = source || label || chip.textContent.trim();
+          if (!links.length) {
+            chip.remove();
+            return;
           }
-          if (replacement.textContent) {
-            replacement.prepend(document.createTextNode(' ['));
-            replacement.appendChild(document.createTextNode(']'));
-          }
+          const replacement = document.createElement('span');
+          replacement.appendChild(document.createTextNode(' ['));
+          links.forEach((a, index) => {
+            if (index) replacement.appendChild(document.createTextNode('; '));
+            const link = document.createElement('a');
+            link.setAttribute('href', a.getAttribute('href'));
+            link.textContent = a.getAttribute('aria-label') || a.textContent.trim() || a.getAttribute('href');
+            replacement.appendChild(link);
+          });
+          replacement.appendChild(document.createTextNode(']'));
           chip.replaceWith(replacement);
         });
         clone.querySelectorAll('button, [role="button"], [hidden], [aria-hidden="true"], .cdk-visually-hidden').forEach((el) => el.remove());
@@ -75,6 +71,23 @@
       };
       const normalizePdfFilename = (name) => String(name || "")
         .normalize("NFC").trim().replace(/\.pdf$/i, ".pdf");
+      const composerFilenameMatches = (label, filename) => {
+        const actual = normalizePdfFilename(label);
+        const expected = normalizePdfFilename(filename);
+        if (actual === expected) return true;
+        // Gemini puts a middle elision in the DOM, not just CSS overflow.
+        // Use both retained ends of the basename, only for the new upload card.
+        // The submitted user turn must still expose the complete filename.
+        if (!actual.endsWith(".pdf") || !expected.endsWith(".pdf")) return false;
+        const parts = actual.slice(0, -4).split(/…|\.\.\./);
+        if (parts.length !== 2) return false;
+        const [prefix, suffix] = parts;
+        const basename = expected.slice(0, -4);
+        return prefix.length >= 4 && suffix.length >= 4 &&
+          prefix.length + suffix.length >= 16 &&
+          prefix.length + suffix.length < basename.length &&
+          basename.startsWith(prefix) && basename.endsWith(suffix);
+      };
       const getComposerAttachments = () => Array.from(inputRoot()?.querySelectorAll("uploader-file-preview") || [])
         .filter(isVisibleElement)
         .map((node) => {
@@ -195,7 +208,7 @@
             const cards = getComposerAttachments().filter((card) => !baseline.has(card.node));
             const matching = cards.filter((card) => file.type.startsWith("image/")
               ? card.kind === "image"
-              : card.kind === "file" && normalizePdfFilename(card.filename) === normalizePdfFilename(file.name));
+              : card.kind === "file" && composerFilenameMatches(card.filename, file.name));
             if (matching.length === 1 && cards.length === 1 && matching[0].ready) {
               if (readySince === null) readySince = now();
               if (now() - readySince >= 750) {
