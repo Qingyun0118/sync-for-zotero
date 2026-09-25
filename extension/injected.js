@@ -993,6 +993,19 @@
   function storeDeepSeekHistorySnapshot(snapshot) {
     if (!snapshot || !Array.isArray(snapshot.history)) return;
     const cache = getDeepSeekCache();
+    const current = cache.history;
+    // Bootstrap responses from non-history endpoints (e.g. title/session
+    // lookups) can parse as invalid_source. They must not overwrite a
+    // healthy snapshot that the history menu depends on.
+    if (
+      current &&
+      current.status === "ok" &&
+      Array.isArray(current.history) &&
+      current.history.length > 0 &&
+      snapshot.status !== "ok"
+    ) {
+      return;
+    }
     cache.history = snapshot;
     emitDeepSeekHistorySnapshot(snapshot);
   }
