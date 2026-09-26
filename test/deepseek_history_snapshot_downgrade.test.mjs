@@ -14,6 +14,7 @@ const injectedSource = fs.readFileSync(
 const HISTORY_CACHE_EVENT = "SYNC_ZOTERO_DEEPSEEK_HISTORY_CACHE";
 const FETCH_PAGE_URL = "https://chat.deepseek.com/api/v0/chat_session/fetch_page";
 const FETCH_PAGE_MORE_URL = `${FETCH_PAGE_URL}?page=2`;
+const FETCH_PAGE_STALE_URL = `${FETCH_PAGE_URL}?page=9`;
 const CREATE_SESSION_URL = "https://chat.deepseek.com/api/v0/chat_session/create";
 
 function jsonResponse(payload) {
@@ -50,9 +51,17 @@ function fetchPagePayload(entries) {
   };
 }
 
+// A history-shaped response whose entries cannot be normalized (schema
+// drift): the extractor reports invalid_source for genuine history
+// endpoints in this state.
+function degradedHistoryPayload() {
+  return fetchPagePayload([{ id: "not-a-valid-id", name: "DeepSeek" }]);
+}
+
 // A bootstrap response from a non-history endpoint whose URL contains
-// "session": the extractor treats its nested arrays as history candidates,
-// fails to normalize every entry, and produces an "invalid_source" snapshot.
+// "session": before the URL heuristic was tightened, the extractor treated
+// its nested arrays as history candidates, failed to normalize every entry,
+// and produced a spurious "invalid_source" snapshot.
 function createSessionPayload() {
   return {
     code: 0,
@@ -124,18 +133,18 @@ function createHarness(payloads) {
   };
 }
 
-test("a degraded bootstrap response never replaces a healthy history snapshot", async () => {
+test("a degraded history response never replaces a healthy snapshot", async () => {
   const harness = createHarness({
     [FETCH_PAGE_URL]: fetchPagePayload([
       { id: "8f3a2b1c-4d5e-6f70-8a9b-0c1d2e3f4a5b", title: "Attention Is All You Need" },
     ]),
-    [CREATE_SESSION_URL]: createSessionPayload(),
+    [FETCH_PAGE_STALE_URL]: degradedHistoryPayload(),
   });
 
   await harness.request(FETCH_PAGE_URL);
   assert.equal(harness.historySnapshot().status, "ok");
 
-  await harness.request(CREATE_SESSION_URL);
+  await harness.request(FETCH_PAGE_STALE_URL);
 
   const snapshot = harness.historySnapshot();
   assert.equal(snapshot.status, "ok");
@@ -145,12 +154,40 @@ test("a degraded bootstrap response never replaces a healthy history snapshot", 
   assert.equal(harness.historyMessages().at(-1).snapshot.status, "ok");
 });
 
-test("a degraded snapshot is still stored when no healthy snapshot exists", async () => {
+test("responses from non-history endpoints are ignored entirely", async () => {
   const harness = createHarness({
     [CREATE_SESSION_URL]: createSessionPayload(),
   });
 
   await harness.request(CREATE_SESSION_URL);
+
+  assert.equal(harness.historySnapshot(), null);
+  assert.equal(harness.historyMessages().length, 0);
+});
+
+test("responses from non-history endpoints never downgrade a healthy snapshot", async () => {
+  const harness = createHarness({
+    [FETCH_PAGE_URL]: fetchPagePayload([
+      { id: "8f3a2b1c-4d5e-6f70-8a9b-0c1d2e3f4a5b", title: "Attention Is All You Need" },
+    ]),
+    [CREATE_SESSION_URL]: createSessionPayload(),
+  });
+
+  await harness.request(FETCH_PAGE_URL);
+  await harness.request(CREATE_SESSION_URL);
+
+  const snapshot = harness.historySnapshot();
+  assert.equal(snapshot.status, "ok");
+  assert.equal(snapshot.history.length, 1);
+  assert.equal(harness.historyMessages().length, 1);
+});
+
+test("a degraded history response is stored when no healthy snapshot exists", async () => {
+  const harness = createHarness({
+    [FETCH_PAGE_STALE_URL]: degradedHistoryPayload(),
+  });
+
+  await harness.request(FETCH_PAGE_STALE_URL);
 
   assert.equal(harness.historySnapshot().status, "invalid_source");
   assert.equal(harness.historyMessages().length, 1);
@@ -165,11 +202,9 @@ test("a newer healthy snapshot replaces an older healthy snapshot", async () => 
       { id: "8f3a2b1c-4d5e-6f70-8a9b-0c1d2e3f4a5b", title: "Attention Is All You Need" },
       { id: "1a2b3c4d-5e6f-7081-92a3-b4c5d6e7f809", title: "Zotero history notes" },
     ]),
-    [CREATE_SESSION_URL]: createSessionPayload(),
   });
 
   await harness.request(FETCH_PAGE_URL);
-  await harness.request(CREATE_SESSION_URL);
   await harness.request(FETCH_PAGE_MORE_URL);
 
   const snapshot = harness.historySnapshot();
