@@ -855,6 +855,8 @@ const shared = globalThis.SyncZoteroShared || {
 const WEBCHAT_DEBUG = false;
 const TURN_DEBUG_EVENT_LIMIT = 200;
 const RESPONSE_TIMEOUT_MS = 60 * 60_000;
+// ChatGPT mounts the transcript within seconds of the conversation URL settling; if no turn node appears within five minutes of entering the pending state, the page is not going to expose it.
+const PENDING_TRANSCRIPT_TIMEOUT_MS = 5 * 60_000;
 let turnDebugEvents = [];
 let activeTurnDebugToken = null;
 
@@ -2283,6 +2285,12 @@ function buildDiagnostic(overrides = {}) {
           Math.floor(Number(overrides.completionDetectionMs) || 0),
         ),
   };
+  // Transcript counts are attached only by the user-turn verification error.
+  for (const key of ["newMessages", "userCandidates", "roleNodesVisible", "roleNodesTotal"]) {
+    if (overrides[key] != null && Number.isFinite(Number(overrides[key]))) {
+      diagnostic[key] = Math.max(0, Math.floor(Number(overrides[key])));
+    }
+  }
   lastDiagnostic = {
     ...diagnostic,
     at: Date.now(),
@@ -3158,6 +3166,22 @@ function postTurnState(port, payload) {
   } catch (_) {}
 }
 
+function makeTurnVerificationError(message, reasonCode, diagnosticDetails = {}) {
+  const error = new Error(message);
+  error.reasonCode = reasonCode;
+  error.diagnosticDetails = diagnosticDetails;
+  return error;
+}
+
+function countConversationRoleNodes() {
+  const selector = SITE_ADAPTER?.conversationMessageSelector || "[data-message-author-role]";
+  const nodes = Array.from(document.querySelectorAll(selector));
+  return {
+    roleNodesVisible: nodes.filter((node) => isVisibleElement(node)).length,
+    roleNodesTotal: nodes.length,
+  };
+}
+
 function postTerminal(port, payload) {
   try {
     port.postMessage({ type: "terminal", ...payload });
@@ -3229,6 +3253,8 @@ async function streamResponseSnapshots(
   let reportedAssistantTurn = false;
   let reportedDeepSeekRequestCorrelation = false;
   let reportedDeepSeekMissingUserTurn = false;
+  let reportedPendingTranscript = false;
+  let pendingTranscriptSince = 0;
   let lastActiveRun = null;
   let toolUseDetected = false;
   let completionTracker = shared.createTurnCompletionTracker(Date.now());
@@ -3292,6 +3318,18 @@ async function streamResponseSnapshots(
     completionDetectionMs: getCompletionDetectionMs(),
     ...overrides,
   });
+  const baselineChatId = baseline.chatId || null;
+  // Evidence that the submit reached the provider even though no turn node
+  // is mounted yet: conversation transport after the baseline, the outbound
+  // conversation POST after the submit baseline, or a newly allocated
+  // conversation id in the page URL.
+  const submissionObservedSinceBaseline = (transcript) =>
+    activeConversationStreamCount > 0 ||
+    lastStreamAt > baselineLastStreamAt ||
+    sseDoneAt > 0 ||
+    lastTransportCompletedAt > baselineTransportCompletedAt ||
+    (submissionMeta != null && outboundRequestSerial > baselineOutboundRequestSerial) ||
+    Boolean(transcript?.chatId && transcript.chatId !== baselineChatId);
 
   recordTurnDebug("baseline_transcript", {
     seq,
@@ -3470,12 +3508,12 @@ async function streamResponseSnapshots(
 
         if (!strictActiveRun) {
           // Fallback: take the last user message after baseline (position-based).
-          const fallbackCandidates = shared.conversationMessagesAfterBaseline(
+          const newMessages = shared.conversationMessagesAfterBaseline(
             transcript.messages,
             baseline.messages,
             baselineTranscriptCount,
-          )
-            .filter((m) => m.role === "user");
+          );
+          const fallbackCandidates = newMessages.filter((m) => m.role === "user");
           if (fallbackCandidates.length > 0 && deepseekRequestObserved) {
             const fallback = fallbackCandidates[fallbackCandidates.length - 1];
             matchedUserTurn = fallback;
@@ -3500,6 +3538,57 @@ async function streamResponseSnapshots(
                 requestSerial: requestContext?.requestSerial || null,
                 remoteChatUrl,
                 remoteChatId,
+              });
+            }
+          } else if (SITE_ADAPTER?.siteId !== "deepseek" && fallbackCandidates.length > 0) {
+            throw makeTurnVerificationError(
+              `Chat exposed ${fallbackCandidates.length} new user turn(s) after the baseline but none matched the submitted prompt, so delivery could not be verified.`,
+              "user_turn_not_found",
+              {
+                newMessages: newMessages.length,
+                userCandidates: fallbackCandidates.length,
+                ...countConversationRoleNodes(),
+              },
+            );
+          } else if (
+            SITE_ADAPTER?.siteId !== "deepseek" &&
+            newMessages.length === 0 &&
+            submissionObservedSinceBaseline(transcript)
+          ) {
+            // ChatGPT mounts (and virtualizes) its transcript late: the answer
+            // can finish server-side before any turn node exists. The submit
+            // was observed, so keep waiting for the turn instead of failing.
+            if (
+              reportedPendingTranscript &&
+              nowMs - pendingTranscriptSince > PENDING_TRANSCRIPT_TIMEOUT_MS
+            ) {
+              throw makeTurnVerificationError(
+                "Chat never exposed a user turn matching the submitted prompt, so delivery could not be verified.",
+                "transcript_not_mounted",
+                countConversationRoleNodes(),
+              );
+            }
+            if (!reportedPendingTranscript) {
+              reportedPendingTranscript = true;
+              pendingTranscriptSince = nowMs;
+              recordTurnDebug("user_turn_pending_transcript", {
+                seq,
+                attempt,
+                remoteChatUrl,
+                remoteChatId,
+                ...countConversationRoleNodes(),
+              });
+              postTurnState(port, {
+                seq,
+                attempt,
+                remoteChatUrl,
+                remoteChatId,
+                baselineTranscriptCount,
+                baselineTranscriptHash,
+                turnStatus: "submitted",
+                diagnostic: makeTurnDiagnostic("submitted", {
+                  reasonCode: "transcript_not_mounted",
+                }),
               });
             }
           } else {
@@ -4062,6 +4151,13 @@ async function streamResponseSnapshots(
   assertPipelineCurrent(isPipelineCurrent);
   if (SITE_ADAPTER?.siteId === "gemini") {
     assertTrackedConversation(extractConversationTranscript());
+  }
+  if (reportedPendingTranscript && !userTurnKey) {
+    throw makeTurnVerificationError(
+      "Chat never exposed a user turn matching the submitted prompt, so delivery could not be verified.",
+      "transcript_not_mounted",
+      countConversationRoleNodes(),
+    );
   }
   const timeoutAnswerText = shared.hasMeaningfulAssistantText(lastAnswerText)
     ? lastAnswerText
@@ -6228,8 +6324,9 @@ if (!window.__syncZoteroListenerRegistered) {
             attempt,
             error: err.message,
             diagnostic: buildDiagnostic({
+              ...(err?.diagnosticDetails || {}),
               phase: "error",
-              reasonCode: "pipeline_error",
+              reasonCode: err?.reasonCode || "pipeline_error",
               message: err.message,
               composerTextMatched,
               uploadDetected,

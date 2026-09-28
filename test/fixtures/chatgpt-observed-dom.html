@@ -1,0 +1,55 @@
+<!-- Reduced chatgpt.com transcript observed on 2026-09-28 (attributes trimmed).
+     Turns mount late and off-screen turns leave empty placeholder containers. -->
+<div id="thread">
+  <div class="flex flex-col">
+    <div data-turn-id-container="client-created-root"></div>
+    <div data-turn-id-container="placeholder-offscreen" data-is-intersecting="false"></div>
+    <div data-turn-id-container="4c1a7f0e-user-turn" data-is-intersecting="true">
+      <section dir="auto" data-turn-id="4c1a7f0e-user-turn" data-turn-id-container="4c1a7f0e-user-turn" data-testid="conversation-turn-1" data-turn="user">
+        <h4 class="sr-only select-none">You said:</h4>
+        <div>
+          <div data-conversation-screenshot-content="">
+            <div>
+              <div data-message-author-role="user" data-message-id="a3f0c2d4-user-0001" dir="auto" class="text-message min-h-8">
+                <div class="user-message-bubble-color">
+                  <div data-testid="collapsible-user-message-root" data-collapsed="false" data-can-expand="false">
+                    <div data-testid="collapsible-user-message-content">
+                      <div class="whitespace-pre-wrap">Please summarize the selected text above in one short paragraph.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+    <div data-turn-id-container="9b2e61aa-assistant-turn" data-is-intersecting="true">
+      <section dir="auto" data-turn-id="9b2e61aa-assistant-turn" data-turn-id-container="9b2e61aa-assistant-turn" data-testid="conversation-turn-2" data-turn="assistant">
+        <h4 class="sr-only select-none">ChatGPT said:</h4>
+        <div>
+          <div data-conversation-screenshot-content="">
+            <div class="agent-turn">
+              <div>
+                <div data-message-author-role="assistant" data-message-id="b7d91e35-assistant-0002" dir="auto" class="text-message min-h-8" data-turn-start-message="true" data-message-model-slug="gpt-5">
+                  <div>
+                    <div class="markdown prose markdown-new-styling"><p>The selected text argues that grid cells provide a metric for path integration.</p></div>
+                  </div>
+                </div>
+              </div>
+              <div aria-label="Response actions" role="group">
+                <button data-testid="copy-turn-action-button" aria-label="Copy"><svg></svg></button>
+                <button data-testid="good-response-turn-action-button" aria-label="Good response"><svg></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<form>
+  <div id="prompt-textarea" class="ProseMirror" contenteditable="true" role="textbox"></div>
+  <textarea name="prompt-textarea" style="display:none"></textarea>
+  <button id="composer-submit-button" type="submit" data-testid="send-button" aria-label="Send prompt"></button>
+</form>

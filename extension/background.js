@@ -592,6 +592,15 @@ function formatDiagnosticError(message, diagnostic) {
   }
   if (diagnostic.requestObserved === true) details.push("request_observed");
   if (diagnostic.streamObserved === true) details.push("stream_observed");
+  if (Number.isFinite(Number(diagnostic.newMessages)) && diagnostic.newMessages != null) {
+    details.push(`new=${Number(diagnostic.newMessages)}`);
+  }
+  if (Number.isFinite(Number(diagnostic.userCandidates)) && diagnostic.userCandidates != null) {
+    details.push(`user_candidates=${Number(diagnostic.userCandidates)}`);
+  }
+  if (diagnostic.roleNodesVisible != null && diagnostic.roleNodesTotal != null) {
+    details.push(`role_nodes=${Number(diagnostic.roleNodesVisible)}/${Number(diagnostic.roleNodesTotal)}`);
+  }
   return details.length > 0 ? `${base} (${details.join(", ")})` : base;
 }
 
