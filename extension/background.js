@@ -439,6 +439,39 @@ async function heartbeat() {
 discoverZoteroPort();
 setInterval(heartbeat, HEARTBEAT_INTERVAL_MS);
 
+// --- keepalive: keep the MV3 service worker warm ---------------------------
+// An idle MV3 background worker is suspended after ~30s, which stops the 10s
+// heartbeat and lets the Zotero-side freshness window for the extension
+// status expire ("has not reported a fresh delivery-contract capability").
+// Chat-tab content scripts ping SW_KEEPALIVE periodically; tab/focus events
+// also refresh the status when the user returns to the browser.
+const KEEPALIVE_DEBOUNCE_MS = 4000;
+let lastHeartbeatKickAt = 0;
+function kickHeartbeat() {
+  const now = Date.now();
+  if (now - lastHeartbeatKickAt < KEEPALIVE_DEBOUNCE_MS) return;
+  lastHeartbeatKickAt = now;
+  heartbeat().catch(() => {});
+}
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message && message.type === "SW_KEEPALIVE") {
+    kickHeartbeat();
+    sendResponse({ ok: true, at: Date.now() });
+    return true;
+  }
+});
+if (chrome.tabs && chrome.tabs.onActivated) {
+  chrome.tabs.onActivated.addListener(() => kickHeartbeat());
+}
+if (chrome.windows && chrome.windows.onFocusChanged) {
+  chrome.windows.onFocusChanged.addListener((windowId) => {
+    if (windowId !== chrome.windows.WINDOW_ID_NONE) {
+      kickHeartbeat();
+    }
+  });
+}
+// --- end keepalive ---------------------------------------------------------
+
 // Auto-discover existing chat tabs on startup without opening new tabs.
 (async () => {
   // Search all supported sites for an existing tab

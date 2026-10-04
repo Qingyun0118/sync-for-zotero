@@ -6608,3 +6608,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // Keep message channel open for async response
   }
 });
+
+// --- keepalive: keep the service worker warm while this chat tab lives -----
+// MV3 background workers are suspended when idle (~30s), stopping the
+// heartbeat that refreshes the extension status consumed by the Zotero
+// plugin. Ping periodically, and refresh immediately on focus/visibility.
+(function keepBackgroundWarm() {
+  const KEEPALIVE_MS = 15000;
+  const ping = () => {
+    try {
+      chrome.runtime.sendMessage({ type: "SW_KEEPALIVE", at: Date.now() }, () => {
+        void chrome.runtime.lastError;
+      });
+    } catch (_) { /* extension context invalidated after reload */ }
+  };
+  setInterval(ping, KEEPALIVE_MS);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) ping(); }, { passive: true });
+  window.addEventListener("focus", ping, { passive: true });
+  window.addEventListener("pageshow", ping, { passive: true });
+  ping();
+})();
+// --- end keepalive ---------------------------------------------------------
