@@ -825,13 +825,25 @@
     try {
       const parsed = new URL(resolveUrl(url));
       const path = parsed.pathname.toLowerCase();
+      if (path.includes("/completion")) return false;
+      // Resource/mutation endpoints share the history path prefix
+      // (e.g. DeepSeek /api/v0/chat_session/create) without carrying a
+      // history list. Treating them as history sources fabricates
+      // invalid_source verdicts that blank out the history menu.
+      if (
+        /\/(?:create|delete|remove|rename|update|pin|unpin|archive)(?:\/|$)/.test(
+          path,
+        )
+      ) {
+        return false;
+      }
       return (
         path.includes("history") ||
         path.includes("conversation") ||
         path.includes("session") ||
         path.includes("thread") ||
         path.includes("list")
-      ) && !path.includes("/completion");
+      );
     } catch {
       return false;
     }
@@ -993,6 +1005,19 @@
   function storeDeepSeekHistorySnapshot(snapshot) {
     if (!snapshot || !Array.isArray(snapshot.history)) return;
     const cache = getDeepSeekCache();
+    const current = cache.history;
+    // Bootstrap responses from non-history endpoints (e.g. title/session
+    // lookups) can parse as invalid_source. They must not overwrite a
+    // healthy snapshot that the history menu depends on.
+    if (
+      current &&
+      current.status === "ok" &&
+      Array.isArray(current.history) &&
+      current.history.length > 0 &&
+      snapshot.status !== "ok"
+    ) {
+      return;
+    }
     cache.history = snapshot;
     emitDeepSeekHistorySnapshot(snapshot);
   }

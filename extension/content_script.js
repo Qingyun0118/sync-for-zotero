@@ -6311,6 +6311,13 @@ function collectDeepSeekHistoryEntriesWithRoot() {
     });
   }
 
+  // Current DeepSeek builds render history links without any of the
+  // semantic/class hooks above (no aside/nav/history classes). Fall back
+  // to scanning the whole body so the sidebar list is still collected.
+  if (candidates.length === 0 && document.body instanceof Element) {
+    candidates.push(document.body);
+  }
+
   let bestRoot = null;
   let bestScore = -1;
   for (const candidate of candidates) {
