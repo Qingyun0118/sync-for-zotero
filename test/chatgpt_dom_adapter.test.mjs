@@ -36,7 +36,7 @@ function content(html = "", url = homeUrl) {
   vm.runInContext(contentSource, context);
   const api = vm.runInContext(`({ adapter: SITE_ADAPTER, extractConversationTranscript,
     findStopButton, resolveBoundAssistantTurn, findMatchingUserTurn, hasResponseActionBar,
-    streamResponseSnapshots, buildDiagnostic })`, context);
+    streamResponseSnapshots, buildDiagnostic, ensureChatGPTChatMode })`, context);
   return { ...api, window, document, context };
 }
 
@@ -295,4 +295,83 @@ test("ChatGPT pending transcript that mounts within five minutes still completes
   assert.equal(terminals[0].runState, "done");
   assert.equal(terminals[0].text, answer);
   assert.equal(terminals[0].userTurnKey, "a3f0c2d4-user-0001");
+});
+
+const modernComposer = '<div role="textbox" contenteditable="true" data-composer-markdown aria-label="Ask ChatGPT"></div>';
+const modeToggle = '<div role="group" aria-label="Composer mode"><button aria-pressed="false">Chat</button><button aria-pressed="true">Work</button></div>';
+
+test("ChatGPT selects Chat before accepting the modern composer", async () => {
+  const page = content(modeToggle + modernComposer);
+  const chat = page.document.querySelector("button");
+  let clicks = 0;
+  chat.addEventListener("click", () => { clicks++; chat.setAttribute("aria-pressed", "true"); });
+  installClock(page, []);
+  await page.ensureChatGPTChatMode();
+  await page.ensureChatGPTChatMode();
+  assert.equal(clicks, 1);
+});
+
+test("ChatGPT refuses an unconfirmed mode or an existing Work conversation", async () => {
+  const page = content(modeToggle + modernComposer);
+  installClock(page, []);
+  await assert.rejects(page.ensureChatGPTChatMode(() => true, 500), /did not confirm Chat mode/);
+  const work = content(modernComposer.replace("Ask ChatGPT", "Work with ChatGPT"), realChatUrl);
+  await assert.rejects(work.ensureChatGPTChatMode(), /Start a new WebChat/);
+});
+
+test("ChatGPT waits for hydration and aborts when the request is cancelled", async () => {
+  const page = content(modeToggle.replaceAll('<button ', '<button disabled ') + modernComposer);
+  const chat = page.document.querySelector("button");
+  chat.addEventListener("click", () => chat.setAttribute("aria-pressed", "true"));
+  installClock(page, [{at: 200, run: () => chat.removeAttribute("disabled")}]);
+  await page.ensureChatGPTChatMode();
+  await assert.rejects(page.ensureChatGPTChatMode(() => false));
+});
+
+test("ChatGPT modern transcript binds the answer and PDF without reasoning or file text in the prompt", () => {
+  const html = `<div data-chatgpt-search-unit-key="turn:0:user" data-chatgpt-search-message-ids="modern-user">
+    <button aria-label="paper.pdf"></button><span title="paper.pdf">paper.pdf</span><span>PDF</span>
+    <div data-user-message-bubble>${prompt}</div></div>
+    <div data-chatgpt-search-unit-key="turn:1:reasoning">Do not return reasoning.</div>
+    <div><div data-chatgpt-search-unit-key="turn:2:assistant" data-chatgpt-search-message-ids="modern-answer modern-answer">
+    <h4 class="sr-only">ChatGPT said:</h4><div data-markdown-text-style="assistant-message"><ul><li>${answer}</li><li>Second point.</li></ul></div></div>
+    <button aria-label="Copy"></button></div>`;
+  const page = content(html, realChatUrl);
+  const transcript = page.extractConversationTranscript();
+  assert.equal(transcript.count, 2);
+  assert.equal(transcript.messages[0].text, prompt);
+  assert.ok(transcript.messages[0].attachments.includes("paper.pdf"));
+  assert.equal(transcript.messages[1].messageKey, "modern-answer");
+  assert.match(transcript.messages[1].text, /Second point/);
+  assert.doesNotMatch(transcript.messages[1].text, /ChatGPT said|reasoning/);
+  assert.equal(page.resolveBoundAssistantTurn(transcript, "modern-user").messageKey, "modern-answer");
+  assert.equal(page.hasResponseActionBar(), true);
+});
+
+test("ChatGPT modern DOM completes the response pipeline without a network transcript", async () => {
+  const page = content(modernComposer, homeUrl);
+  const baseline = page.extractConversationTranscript();
+  const clock = installClock(page, [{at: 1000, run: () => {
+    page.window.location = new URL(realChatUrl);
+    page.document.body.insertAdjacentHTML("afterbegin", `<div data-chatgpt-search-unit-key="turn:0:user" data-chatgpt-search-message-ids="new-user"><div data-user-message-bubble>${prompt}</div></div>
+      <div class="group"><div><div><div data-chatgpt-search-unit-key="turn:2:assistant" data-chatgpt-search-message-ids="new-answer"><div data-markdown-text-style="assistant-message"><p>${answer}</p></div></div></div></div><button aria-label="Copy"></button></div>`);
+  }}]);
+  const {events, port} = recorder(clock);
+  await page.streamResponseSnapshots(port, 20, 1, baseline, prompt, "|0", {clickAttempts:1}, 60000);
+  const terminals = events.filter(event => event.type === "terminal");
+  assert.equal(terminals.length, 1);
+  assert.equal(terminals[0].runState, "done");
+  assert.equal(terminals[0].text, answer);
+  assert.equal(terminals[0].diagnostic.reasonCode, "verified_done");
+  assert.equal(terminals[0].assistantTurnKey, "new-answer");
+});
+
+test("ChatGPT does not reuse completion controls from an earlier modern answer", () => {
+  const page = content(`<section><div><div data-chatgpt-search-unit-key="turn:0:assistant">Old answer</div><button aria-label="Copy"></button></div><div><div data-chatgpt-search-unit-key="turn:1:assistant">New answer still streaming</div></div></section>`, realChatUrl);
+  assert.equal(page.hasResponseActionBar(), false);
+});
+
+test("ChatGPT counts nested legacy and modern markup as one message", () => {
+  const page = content(`<div data-chatgpt-search-unit-key="turn:0:user" data-chatgpt-search-message-ids="user-id"><div data-message-author-role="user" data-message-id="user-id"><div data-user-message-bubble>${prompt}</div></div></div>`, realChatUrl);
+  assert.equal(page.extractConversationTranscript().count, 1);
 });

@@ -43,7 +43,11 @@
         error: null,
       };
       try {
-        const composer = document.querySelector("#prompt-textarea");
+        const composer = Array.from(document.querySelectorAll(
+          '#prompt-textarea, [contenteditable="true"][data-composer-markdown]',
+        )).find((node) => node.getBoundingClientRect().width > 0 &&
+          node.getBoundingClientRect().height > 0 &&
+          !node.closest('[hidden], [aria-hidden="true"]'));
         if (!(composer instanceof HTMLElement)) {
           throw new Error("ChatGPT composer was not found.");
         }

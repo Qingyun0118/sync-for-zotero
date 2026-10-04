@@ -954,17 +954,22 @@ const SITE_ADAPTERS = {
       'button[title="Stop"]',
       '[data-testid*="cancel"]',
     ],
-    userMessageSelector: "[data-message-author-role='user']",
+    userMessageSelector: "[data-message-author-role='user'], [data-chatgpt-search-unit-key$=':user']",
     assistantMessageSelectors: [
       "[data-message-author-role='assistant']",
       "article[data-testid*='assistant']",
+      "[data-chatgpt-search-unit-key$=':assistant']",
     ],
-    conversationMessageSelector: "[data-message-author-role]",
+    conversationMessageSelector:
+      "[data-message-author-role], [data-chatgpt-search-unit-key$=':user'], [data-chatgpt-search-unit-key$=':assistant']",
     getMessageRole(node) {
-      return node.getAttribute("data-message-author-role");
+      return node.getAttribute("data-message-author-role") ||
+        node.getAttribute("data-chatgpt-search-unit-key")?.split(":").pop();
     },
     getMessageId(node) {
-      return node.getAttribute?.("data-message-id") || node.id || null;
+      return node.getAttribute("data-message-id") ||
+        node.getAttribute("data-chatgpt-search-message-ids")?.trim().split(/\s+/)[0] ||
+        node.id || null;
     },
     conversationTurnSelector: "[data-testid^='conversation-turn']",
     actionBarSelectors: [
@@ -2982,7 +2987,17 @@ function hasResponseActionBar(assistantTurnKey = null) {
   // Search within the conversation turn container (action bar can be a sibling
   // of the message node, not a child).
   const turnSel = SITE_ADAPTER?.conversationTurnSelector;
-  const searchRoot = (turnSel ? lastMsg.closest(turnSel) : null) || lastMsg.parentElement || lastMsg;
+  let searchRoot = (turnSel ? lastMsg.closest(turnSel) : null) || lastMsg.parentElement || lastMsg;
+  if (SITE_ADAPTER?.siteId === "chatgpt" && lastMsg.hasAttribute("data-chatgpt-search-unit-key")) {
+    // The current UI groups a user turn, assistant blocks, and the action row
+    // under separate wrappers. Never borrow controls from another answer.
+    for (let parent = lastMsg.parentElement, depth = 0; parent && depth < 3; parent = parent.parentElement, depth++) {
+      const answers = parent.querySelectorAll("[data-chatgpt-search-unit-key$=':assistant']");
+      if (answers.length !== 1 || answers[0] !== lastMsg) break;
+      searchRoot = parent;
+      if (parent.querySelector('button[aria-label="Copy"], button[aria-label="Regenerate response"]')) break;
+    }
+  }
 
   // --- Primary: known selectors for action buttons ---
   const ACTION_SELECTORS = SITE_ADAPTER?.actionBarSelectors || [];
@@ -4329,6 +4344,7 @@ function extractDeepSeekAssistantSections(node) {
 
 function extractBestAssistantAnswerCandidate(prunedAssistant) {
   const contentSelectors = [
+    "[data-markdown-text-style='assistant-message']",
     ".markdown",
     ".ds-markdown",
     ".markdown-container",
@@ -4927,7 +4943,9 @@ function extractAttachmentNames(node) {
 function extractUserMessageText(node) {
   if (SITE_ADAPTER?.extractUserMessageText) return SITE_ADAPTER.extractUserMessageText(node);
   if (!node) return "";
-  const root = node.cloneNode(true);
+  const bubble = SITE_ADAPTER?.siteId === "chatgpt"
+    ? node.querySelector("[data-user-message-bubble]") : null;
+  const root = (bubble || node).cloneNode(true);
   removeTransientMessageNodes(root);
   // Remove media elements that inject alt text or empty strings into innerText,
   // corrupting text extraction for image/video messages.
@@ -4947,6 +4965,8 @@ function getConversationMessageNodes() {
   const nodes = Array.from(document.querySelectorAll(selector));
   return nodes.filter((node) => {
     if (!isVisibleElement(node)) return false;
+    // Both layouts can coexist during a rollout. Keep only the outer message.
+    if (SITE_ADAPTER?.siteId === "chatgpt" && node.parentElement?.closest(selector)) return false;
     const role = SITE_ADAPTER?.getMessageRole?.(node) || node.getAttribute("data-message-author-role");
     return role === "user" || role === "assistant";
   });
@@ -6069,6 +6089,35 @@ function assertSubmissionConversation(message) {
   }
 }
 
+// The home page remembers Work mode. Select Chat before collecting a baseline
+// or touching attachments; a bound Work conversation cannot change modes safely.
+async function ensureChatGPTChatMode(isCurrent = () => true, timeoutMs = 10000) {
+  if (SITE_ADAPTER?.siteId !== "chatgpt") return;
+  const deadline = Date.now() + timeoutMs;
+  let clicked = false;
+  do {
+    assertPipelineCurrent(isCurrent);
+    const group = document.querySelector('[role="group"][aria-label="Composer mode"]');
+    const chat = group && Array.from(group.querySelectorAll("button"))
+      .find((button) => button.textContent.trim() === "Chat");
+    const composer = findComposerNow();
+    const workComposer = /work with chatgpt/i.test(composer?.getAttribute("aria-label") || "");
+    if (chat) {
+      if (!chat.disabled && chat.getAttribute("aria-pressed") === "true" && composer && !workComposer) return;
+      if (!chat.disabled && !clicked) {
+        chat.click();
+        clicked = true;
+      }
+    } else if (composer && !workComposer) {
+      return; // Classic ChatGPT or an existing Chat conversation.
+    } else if (workComposer && getCurrentChatId()) {
+      throw new Error("This conversation uses ChatGPT Work. Start a new WebChat conversation to send papers in Chat mode.");
+    }
+    await workerSleep(100);
+  } while (Date.now() < deadline);
+  throw new Error("ChatGPT did not confirm Chat mode. Select Chat on the home page and try again.");
+}
+
 function clearSyncZoteroAttemptToken(attemptToken) {
   if (_syncZoteroAttemptToken === attemptToken) {
     _syncZoteroAttemptToken = null;
@@ -6162,6 +6211,7 @@ if (!window.__syncZoteroListenerRegistered) {
             ),
           );
         }
+        await ensureChatGPTChatMode(isPipelineCurrent);
         assertSubmissionConversation(msg);
         const baselineTranscript = extractConversationTranscript();
         const attachmentFingerprint = [

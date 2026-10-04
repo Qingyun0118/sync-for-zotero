@@ -25,6 +25,7 @@ function createBridgeHarness({
   bridgeSettleTimeoutMs = null,
   existingV1Listener = false,
   pasteDelayMs = 0,
+  modernComposer = false,
   pasteTransform = (text) => text,
 } = {}) {
   const listeners = new Map();
@@ -37,6 +38,8 @@ function createBridgeHarness({
     textContent = "";
 
     focus() {}
+    getBoundingClientRect() { return {width: 100, height: 30}; }
+    closest() { return null; }
 
     dispatchEvent(event) {
       if (event.type !== "paste") return true;
@@ -85,6 +88,10 @@ function createBridgeHarness({
     addRange() {},
   };
   const document = {
+    querySelectorAll(selector) {
+      const target = modernComposer ? '[data-composer-markdown]' : '#prompt-textarea';
+      return selector.includes(target) ? [composer] : [];
+    },
     querySelector(selector) {
       return selector === "#prompt-textarea" ? composer : null;
     },
@@ -362,4 +369,12 @@ test("explicitly unhandled paste keeps synchronous fallback and retry", () => {
     matchTimeoutMs: 300,
     allowRetry: true,
   });
+});
+
+
+test("main-world bridge supports the modern composer without prompt-textarea", async () => {
+  const harness = createBridgeHarness({modernComposer: true});
+  await dispatchComposerRequest(harness, "modern-prompt", "Modern composer request");
+  assert.equal(harness.composer.innerText, "Modern composer request");
+  assert.equal(harness.postedMessages.at(-1).ok, true);
 });
