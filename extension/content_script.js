@@ -1166,6 +1166,7 @@ const SITE_ADAPTERS = {
       'textarea[placeholder="Message DeepSeek"]',
       "textarea",
     ],
+    fileInputSelectors: ['input[type="file"]'],
     attachmentPillSelector:
       '[class*="attachment"], [class*="file-pill"], [class*="upload"]',
     getChatIdFromUrl(url) {
@@ -1804,6 +1805,41 @@ async function waitForPdfAttachmentConfirmation({
   });
 }
 
+// Some sites (current DeepSeek builds) ignore synthetic drag/drop events but
+// still wire the native file input behind their "+" button. Attach through
+// that input first when the adapter advertises one.
+function applyFilesToComposerFileInput(files, selectors) {
+  const list = Array.isArray(selectors) ? selectors : [];
+  for (const selector of list) {
+    let input = null;
+    try {
+      input = document.querySelector(selector);
+    } catch (_) {
+      input = null;
+    }
+    if (!input || input.tagName !== "INPUT" || input.type !== "file") continue;
+    if (input.disabled) continue;
+    const accept = String(input.accept || "").toLowerCase();
+    const acceptsPdf =
+      !accept ||
+      accept.includes(".pdf") ||
+      accept.includes("pdf") ||
+      accept.includes("*");
+    if (!acceptsPdf) continue;
+    const dt = new DataTransfer();
+    for (const file of files) dt.items.add(file);
+    try {
+      input.files = dt.files;
+    } catch (_) {
+      return false;
+    }
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+  return false;
+}
+
 async function attachPDF(pdfBase64, pdfFilename) {
   const startedAt = Date.now();
   const baselineEvidence =
@@ -1818,40 +1854,50 @@ async function attachPDF(pdfBase64, pdfFilename) {
 
   if (SITE_ADAPTER?.uploadFile) return SITE_ADAPTER.uploadFile(file);
 
-  const dt = new DataTransfer();
-  dt.items.add(file);
+  let method = "drag_drop";
+  if (
+    applyFilesToComposerFileInput(
+      [file],
+      SITE_ADAPTER?.fileInputSelectors || [],
+    )
+  ) {
+    method = "file_input";
+  } else {
+    const dt = new DataTransfer();
+    dt.items.add(file);
 
-  let dropTarget = document.body;
-  for (const sel of (SITE_ADAPTER?.dropTargetSelectors || [])) {
-    const el = document.querySelector(sel);
-    if (el) {
-      dropTarget = el;
-      break;
+    let dropTarget = document.body;
+    for (const sel of (SITE_ADAPTER?.dropTargetSelectors || [])) {
+      const el = document.querySelector(sel);
+      if (el) {
+        dropTarget = el;
+        break;
+      }
     }
+    dropTarget.dispatchEvent(
+      new DragEvent("dragenter", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: dt,
+      }),
+    );
+    await sleep(100);
+    dropTarget.dispatchEvent(
+      new DragEvent("dragover", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: dt,
+      }),
+    );
+    await sleep(100);
+    dropTarget.dispatchEvent(
+      new DragEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: dt,
+      }),
+    );
   }
-  dropTarget.dispatchEvent(
-    new DragEvent("dragenter", {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: dt,
-    }),
-  );
-  await sleep(100);
-  dropTarget.dispatchEvent(
-    new DragEvent("dragover", {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: dt,
-    }),
-  );
-  await sleep(100);
-  dropTarget.dispatchEvent(
-    new DragEvent("drop", {
-      bubbles: true,
-      cancelable: true,
-      dataTransfer: dt,
-    }),
-  );
 
   let confirmation;
   try {
@@ -1867,7 +1913,7 @@ async function attachPDF(pdfBase64, pdfFilename) {
   }
   return {
     ...confirmation,
-    method: "drag_drop",
+    method,
     totalElapsedMs: Date.now() - startedAt,
   };
 }
