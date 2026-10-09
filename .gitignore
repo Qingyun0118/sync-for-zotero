@@ -1,6 +1,7 @@
 # Extension signing key and build artifacts
 extension.pem
 *.crx
+extension.zip
 .DS_Store
 
 # Node

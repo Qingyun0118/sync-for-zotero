@@ -1,3 +1,5 @@
+> **Qingyun 维护版**：恢复文献标题同步，保留图片、SVG 与字符图。安装与维护请看 [维护说明](FORK_MAINTENANCE.md)，配套 LLM for Zotero v3.9.12。
+
 # Sync for Zotero
 
 一个 Chromium 扩展，作为 [LLM for Zotero](https://github.com/yilewang/llm-for-zotero) 插件的 **网页聊天桥接工具**。它通过浏览器将 Zotero 连接到 ChatGPT、DeepSeek 或 Google Gemini：上传 PDF 和图片、发送提示词、同步聊天操作，并将 Markdown 格式的结果返回给 Zotero。

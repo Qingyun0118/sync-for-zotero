@@ -1,7 +1,15 @@
 name: Release Extension
-run-name: Release ${{ inputs.tag }}
+run-name: Release ${{ inputs.tag || github.ref_name }}
 
 on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - extension/manifest.json
+      - RELEASE_NOTES.md
   workflow_dispatch:
     inputs:
       tag:
@@ -13,7 +21,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -21,12 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Check out release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -36,6 +44,21 @@ jobs:
 
       - name: Install Node.js dependencies
         run: npm ci
+
+      - name: Prepare version tag for a main branch release
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        run: |
+          version=$(node -p 'JSON.parse(require("fs").readFileSync("extension/manifest.json", "utf8")).version')
+          tag="v${version}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag already exists; bump the version for a new release."
+            exit 1
+          fi
+          git tag "$tag"
+          git push origin "refs/tags/$tag"
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Validate tag and manifest version
         run: npm run release:validate -- "$RELEASE_TAG"
@@ -49,7 +72,13 @@ jobs:
       - name: Verify release archive
         run: unzip -t extension.zip
 
-      - name: Upload archive to draft release
-        run: gh release upload "$RELEASE_TAG" extension.zip --clobber
+      - name: Publish or update the extension archive
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" extension.zip --clobber
+          else
+            gh release create "$RELEASE_TAG" extension.zip \
+              --verify-tag --title "$RELEASE_TAG" --notes-file RELEASE_NOTES.md
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

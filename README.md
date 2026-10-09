@@ -1,3 +1,5 @@
+> **Qingyun 维护版**：恢复文献标题同步，保留图片、SVG 与字符图。安装与维护请看 [维护说明](FORK_MAINTENANCE.md)，配套 LLM for Zotero v3.9.12。
+
 # Sync for Zotero
 
 [中文说明](README_CN.md)

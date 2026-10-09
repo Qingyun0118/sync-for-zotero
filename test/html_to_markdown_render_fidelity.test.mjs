@@ -38,11 +38,14 @@ function createConverter() {
   const { document } = parseHTML("<!doctype html><html><body></body></html>");
   const context = {
     document,
+    URL,
+    TextEncoder,
+    btoa,
     Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 },
   };
   vm.createContext(context);
   return vm.runInContext(
-    `${converterSource}\n({ htmlToMarkdown, extractLatexFromKatex })`,
+    `${converterSource}\n({ htmlToMarkdown, extractLatexFromKatex, cloneAssistantMessageForExport, document })`,
     context,
   );
 }
@@ -50,6 +53,57 @@ function createConverter() {
 function convert(html) {
   return createConverter().htmlToMarkdown(html);
 }
+
+const PEAK_DIAGRAM = "      /\\\n     /  \\\n____/____\\____";
+
+test("div-wrapped plaintext diagrams keep fences and omit the toolbar label", () => {
+  const html = '<p>尖峰：</p><div class="rounded-xl">' +
+    '<div>纯文本<button>复制代码</button></div>' +
+    `<div><code class="language-plaintext whitespace-pre">${PEAK_DIAGRAM}</code></div>` +
+    '</div><p>弯得很厉害：</p>';
+  assert.equal(convert(html), `尖峰：\n\n\`\`\`plaintext\n${PEAK_DIAGRAM}\n\`\`\`\n\n弯得很厉害：`);
+});
+
+test("observed ChatGPT code cards without a language class remain blocks", () => {
+  const html = '<div data-markdown-copy="code-block">' +
+    '<div data-markdown-copy="exclude"><div>纯文本</div><button>复制</button></div>' +
+    '<div dir="ltr"><code class="whitespace-pre! block text-size-code CodeContent-ybJ8Tl"><span>USV ----- AUV1 ----- AUV2</span></code></div></div>';
+  assert.equal(convert(html), '```\nUSV ----- AUV1 ----- AUV2\n```');
+});
+
+test("multiline code without a pre or language is a block, ordinary code stays inline", () => {
+  assert.equal(convert(`<p>前</p><div><code>${PEAK_DIAGRAM}</code></div><p>后</p>`),
+    `前\n\n\`\`\`\n${PEAK_DIAGRAM}\n\`\`\`\n\n后`);
+  assert.equal(convert('<p>使用 <code>x + y</code>。</p>'), "使用 `x + y`。");
+});
+
+test("code block extraction preserves blank rows, indentation, entities and line breaks", () => {
+  const diagram = "  ?\n\n\n? USV ?\n\n\n  ?  \n";
+  assert.equal(convert(`<pre><code>${diagram}</code></pre>`),
+    `\`\`\`\n${diagram}\n\`\`\``);
+  assert.equal(convert('<div><code class="language-text">  &lt;x&gt;<br>  |<br>  y</code></div>'),
+    "```text\n  <x>\n  |\n  y\n```");
+});
+
+test("code containing fences and markdown punctuation stays literal", () => {
+  const code = "```text\n  $x$ **bold** _line_ `tick`\n```";
+  assert.equal(convert(`<pre><code class="language-markdown">${code}</code></pre>`),
+    `\`\`\`\`markdown\n${code}\n\`\`\`\``);
+});
+
+test("code wrapper detection does not swallow surrounding prose or another block", () => {
+  assert.equal(convert('<div>说明<code class="language-text">A\nB</code>结束</div>'),
+    "说明\n```text\nA\nB\n```\n结束");
+  assert.equal(convert('<div><code class="language-text">A</code><code class="language-text">B</code></div>'),
+    "```text\nA\n```\n\n```text\nB\n```");
+});
+
+test("code blocks inside lists and quotes keep indentation and blank rows", () => {
+  assert.equal(convert('<ul><li><p>布局：</p><pre><code>A\n\n\n  B</code></pre></li></ul>'),
+    "- 布局：\n  ```\n  A\n  \n  \n    B\n  ```");
+  assert.equal(convert('<blockquote><pre><code>A\n\n\n  B</code></pre></blockquote>'),
+    "> ```\n> A\n> \n> \n>   B\n> ```");
+});
 
 // ---------------------------------------------------------------------------
 // Regression pins: behaviors that already work and must stay byte-identical.
@@ -255,6 +309,57 @@ test("inline images degrade to their alt text", () => {
     "看 示意图 即可",
   );
   assert.equal(convert('<p>前<img src="blob:x">后</p>'), "前后");
+});
+
+test("portable images keep their URL and safely escaped labels", () => {
+  assert.equal(convert('<p>看 <img src="https://example.com/figure.png?a=1&amp;b=2" alt="图 &quot;1&quot;"> 即可</p>'),
+    '看 ![图 "1"](<https://example.com/figure.png?a=1&b=2>) 即可');
+  assert.equal(convert('<img src="data:image/png;base64,aGVsbG8=" alt="图">'),
+    '![图](<data:image/png;base64,aGVsbG8=>)');
+  for (const src of ['javascript:alert(1)', 'file:///tmp/secret.png', 'data:text/html;base64,aGVsbG8=']) {
+    assert.equal(convert(`<img src="${src}" alt="图">`), '图');
+  }
+});
+
+test("ChatGPT SVG image diagrams become portable base64 without losing Chinese labels", () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 330 205"><text>各艘 USV</text></svg>';
+  const src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  const expected = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  assert.equal(convert(`<img data-d-component="svg" src="${src}" alt="">`),
+    `![](<${expected}>)`);
+});
+
+test("loaded tab-local images are embedded once without mutating the page", () => {
+  const { document, cloneAssistantMessageForExport } = createConverter();
+  const node = document.createElement('div');
+  node.innerHTML = '<img src="blob:https://chatgpt.com/image" alt="图">';
+  const image = node.querySelector('img');
+  Object.assign(image, { complete: true, naturalWidth: 100, naturalHeight: 80 });
+  const create = document.createElement.bind(document);
+  let draws = 0;
+  document.createElement = (tag) => tag === 'canvas' ? {
+    getContext: () => ({ drawImage() { draws++; } }),
+    toDataURL: () => 'data:image/png;base64,aGVsbG8=',
+  } : create(tag);
+  assert.equal(cloneAssistantMessageForExport(node).querySelector('img').getAttribute('src'), 'data:image/png;base64,aGVsbG8=');
+  cloneAssistantMessageForExport(node);
+  assert.equal(draws, 1);
+  assert.equal(image.getAttribute('src'), 'blob:https://chatgpt.com/image');
+});
+
+test("protected cross-origin images fall back to a portable URL", () => {
+  const { document, cloneAssistantMessageForExport } = createConverter();
+  const node = document.createElement('div');
+  node.innerHTML = '<img src="https://example.com/figure.png" alt="图"><img width="16" height="16" src="https://example.com/icon.png">';
+  Object.assign(node.querySelector('img'), { complete: true, naturalWidth: 100, naturalHeight: 80 });
+  const create = document.createElement.bind(document);
+  document.createElement = (tag) => tag === 'canvas' ? {
+    getContext: () => ({ drawImage() {} }),
+    toDataURL: () => { throw new Error('SecurityError'); },
+  } : create(tag);
+  const clone = cloneAssistantMessageForExport(node);
+  assert.equal(clone.querySelectorAll('img').length, 1);
+  assert.equal(clone.querySelector('img').getAttribute('src'), 'https://example.com/figure.png');
 });
 
 test("labeled svg icons degrade to their label; decorative svg stays silent", () => {

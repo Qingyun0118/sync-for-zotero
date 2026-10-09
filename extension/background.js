@@ -423,7 +423,7 @@ async function heartbeat() {
         relayFetch(`${SERVER}/extension_status`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(extensionStatus),
+          body: JSON.stringify({ ...extensionStatus, renameChatSupported: true }),
         }).catch(() => {});
       } catch { /* non-critical */ }
 
@@ -856,8 +856,7 @@ const IDLE_POLL_INTERVAL_MS = 2000;
 function adaptivePoll() {
   const isActive = pipelineRunning || (Date.now() - lastQueryActivity < 30_000);
   const interval = isActive ? RELAY_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
-  pollForQuery();
-  pollForCommand();
+  void pollForCommand().then(() => pollForQuery());
   pollForStop();
   setTimeout(adaptivePoll, interval);
 }
@@ -950,9 +949,12 @@ async function scrapeDeepSeekHistory(siteConfig, historyStartedAt) {
   });
 }
 
+let commandRunning = false;
+let queryPolling = false;
 async function pollForCommand() {
-  if (pipelineRunning) return;
+  if (pipelineRunning || commandRunning || queryPolling) return;
   if (!zoteroConnected) return;
+  commandRunning = true;
   try {
     const data = await relayFetch(`${SERVER}/poll_command`).then(r => r.json());
     // Update activeTarget from relay — clear stale tab if target changed
@@ -963,7 +965,11 @@ async function pollForCommand() {
       }
       activeTarget = data.active_target;
     }
-    if (!data.command) return;
+    if (!data.command) {
+      const titleTask = await serverGet("/poll_title");
+      if (titleTask.command?.type === "RENAME_CHAT") await runTitleTask(titleTask.command);
+      return;
+    }
 
     const cmd = data.command;
     if (cmd.type === "NEW_CHAT") {
@@ -1133,7 +1139,44 @@ async function pollForCommand() {
     }
   } catch (_) {
     // Server not running — ignore
+  } finally {
+    commandRunning = false;
   }
+}
+
+async function runTitleTask(command) {
+  let result;
+  const expiresAt = Number(command.updatedAt) + 80_000;
+  let createdTabId = null;
+  try {
+    const url = new URL(command.chatUrl);
+    if (url.origin !== "https://chatgpt.com" || !/^\/c\/[a-zA-Z0-9-]+$/.test(url.pathname) ||
+        url.pathname.split("/").pop() !== command.chatId) throw new Error("Invalid ChatGPT conversation binding");
+    const tabs = await chrome.tabs.query({ url: "https://chatgpt.com/*" });
+    let tab = tabs.find((entry) => shared.conversationUrlsMatch(entry.url, command.chatUrl));
+    if (!tab) {
+      tab = await chrome.tabs.create({ url: command.chatUrl, active: false });
+      createdTabId = tab.id;
+      await waitForTabLoad(tab.id, 30_000);
+    }
+    await ensureContentScript(tab.id);
+    if (!Number.isFinite(expiresAt) || Date.now() >= expiresAt) throw new Error("标题任务已超时，请重试。");
+    result = await sendToContentScript(tab.id, { ...command, expiresAt, type: "RENAME_CHAT" });
+  } catch (error) {
+    result = { status: "failed", error: error.message || String(error) };
+  } finally {
+    if (createdTabId !== null) {
+      try {
+        const tab = await chrome.tabs.get(createdTabId);
+        if (!tab.active && shared.conversationUrlsMatch(tab.url, command.chatUrl)) await chrome.tabs.remove(createdTabId);
+      } catch (_) {}
+    }
+  }
+  await serverPost("/title_result", {
+    chatUrl: command.chatUrl, operationId: command.operationId,
+    status: result?.status || "failed", title: result?.title || "",
+    error: result?.error || "",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,11 +1202,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 async function pollForQuery() {
-  if (pipelineRunning) return;
+  if (pipelineRunning || commandRunning || queryPolling) return;
   if (!zoteroConnected) return;
-
+  queryPolling = true;
   try {
     const data = await serverGet("/poll_query");
+
+    if (commandRunning || pipelineRunning) return;
 
     if (data.status !== "pending") return;
     if (!data.query?.seq) return;
@@ -1185,6 +1230,8 @@ async function pollForQuery() {
     if (!err.message.includes("Failed to fetch") && !err.message.includes("NetworkError")) {
       broadcastStatus("error", err.message);
     }
+  } finally {
+    queryPolling = false;
   }
 }
 

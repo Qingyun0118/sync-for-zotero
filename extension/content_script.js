@@ -954,22 +954,26 @@ const SITE_ADAPTERS = {
       'button[title="Stop"]',
       '[data-testid*="cancel"]',
     ],
-    userMessageSelector: "[data-message-author-role='user'], [data-chatgpt-search-unit-key$=':user']",
+    userMessageSelector: "[data-message-author-role='user'], [data-conversation-role='user'], [data-user-message-bubble], [data-chatgpt-search-unit-key$=':user']",
     assistantMessageSelectors: [
       "[data-message-author-role='assistant']",
       "article[data-testid*='assistant']",
       "[data-chatgpt-search-unit-key$=':assistant']",
     ],
-    conversationMessageSelector:
-      "[data-message-author-role], [data-chatgpt-search-unit-key$=':user'], [data-chatgpt-search-unit-key$=':assistant']",
+    conversationMessageSelector: "[data-message-author-role], [data-conversation-role], [data-user-message-bubble], [data-turn='user'], [data-turn='assistant'], [data-content-search-unit-key$=':user'], [data-content-search-unit-key$=':assistant'], [data-chatgpt-search-unit-key$=':user'], [data-chatgpt-search-unit-key$=':assistant']",
+    getConversationMessageNodes: getChatGPTMessageNodes,
     getMessageRole(node) {
-      return node.getAttribute("data-message-author-role") ||
-        node.getAttribute("data-chatgpt-search-unit-key")?.split(":").pop();
+      return getChatGPTMessageRole(node);
     },
     getMessageId(node) {
-      return node.getAttribute("data-message-id") ||
-        node.getAttribute("data-chatgpt-search-message-ids")?.trim().split(/\s+/)[0] ||
-        node.id || null;
+      const explicit = node.getAttribute?.("data-message-id") || node.getAttribute("data-chatgpt-search-message-ids")?.trim().split(/\s+/)[0] || node.id;
+      if (explicit) return explicit;
+      const unitKey = node.getAttribute("data-content-search-unit-key") || node.getAttribute("data-chatgpt-search-unit-key");
+      if (unitKey) return unitKey;
+      const turn = node.closest("[data-turn-key], [data-turn-id]");
+      const turnKey = turn?.getAttribute("data-turn-key") || turn?.getAttribute("data-turn-id");
+      // The new renderer puts both roles under one turn key.
+      return turnKey ? `${getChatGPTMessageRole(node)}:${turnKey}` : null;
     },
     conversationTurnSelector: "[data-testid^='conversation-turn']",
     actionBarSelectors: [
@@ -3030,6 +3034,19 @@ function hasResponseActionBar(assistantTurnKey = null) {
   if (!assistantMessages.length) return false;
   const lastMsg = assistantMessages[assistantMessages.length - 1];
 
+  if (SITE_ADAPTER?.siteId === "chatgpt") {
+    const group = lastMsg.closest("[data-turn-key]");
+    if (group) {
+      // A grouped turn includes the user's toolbar before the answer. Only
+      // the assistant's footer AFTER this message can confirm completion.
+      return Array.from(group.querySelectorAll(".turn-action-controls"))
+        .some((bar) => bar.closest("[data-turn-key]") === group &&
+          !bar.closest("[data-content-search-unit-key$=':user'], [data-message-author-role='user'], [data-conversation-role='user'], [data-turn='user']") &&
+          Boolean(lastMsg.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+          Array.from(bar.querySelectorAll("button")).some(isVisibleElement));
+    }
+  }
+
   // Search within the conversation turn container (action bar can be a sibling
   // of the message node, not a child).
   const turnSel = SITE_ADAPTER?.conversationTurnSelector;
@@ -3077,6 +3094,11 @@ function hasResponseActionBar(assistantTurnKey = null) {
 }
 
 function getAssistantMessageNodes() {
+  if (SITE_ADAPTER?.getConversationMessageNodes) {
+    return SITE_ADAPTER.getConversationMessageNodes().filter(
+      (node) => SITE_ADAPTER.getMessageRole(node) === "assistant",
+    );
+  }
   const selectors = SITE_ADAPTER?.assistantMessageSelectors || ["[data-message-author-role='assistant']"];
   for (const selector of selectors) {
     const nodes = Array.from(document.querySelectorAll(selector)).filter((node) => {
@@ -3093,6 +3115,11 @@ function getAssistantMessageNodes() {
 }
 
 function getUserMessageCount() {
+  if (SITE_ADAPTER?.getConversationMessageNodes) {
+    return SITE_ADAPTER.getConversationMessageNodes().filter(
+      (node) => SITE_ADAPTER.getMessageRole(node) === "user",
+    ).length;
+  }
   const selector =
     SITE_ADAPTER?.conversationMessageSelector ||
     SITE_ADAPTER?.userMessageSelector ||
@@ -3236,9 +3263,12 @@ function makeTurnVerificationError(message, reasonCode, diagnosticDetails = {}) 
 
 function countConversationRoleNodes() {
   const selector = SITE_ADAPTER?.conversationMessageSelector || "[data-message-author-role]";
-  const nodes = Array.from(document.querySelectorAll(selector));
+  const isChatGPT = SITE_ADAPTER?.siteId === "chatgpt";
+  const nodes = isChatGPT
+    ? getChatGPTMessageNodes({ includeHidden: true })
+    : Array.from(document.querySelectorAll(selector));
   return {
-    roleNodesVisible: nodes.filter((node) => isVisibleElement(node)).length,
+    roleNodesVisible: nodes.filter((node) => isChatGPT ? isVisibleChatGPTMessage(node) : isVisibleElement(node)).length,
     roleNodesTotal: nodes.length,
   };
 }
@@ -3726,8 +3756,13 @@ async function streamResponseSnapshots(
         throw new Error("The submitted Gemini attachments did not match the requested PDF and image count.");
       }
       if (attachmentRequested) {
+        const observed = Array.isArray(matchedUserTurn.attachments) && matchedUserTurn.attachments.length
+          ? matchedUserTurn.attachments.map((name) => String(name).slice(0, 60)).join(" | ")
+          : "none";
+        const scope = userAttachmentScopes.get(matchedUserTurn.messageKey) || "unknown";
         throw new Error(
-          `The submitted user turn did not contain the requested PDF "${expectedPdfFilename}".`,
+          `The submitted user turn did not contain the requested PDF "${expectedPdfFilename}". ` +
+            `(read attachments=[${observed}]; scope=${scope})`,
         );
       }
       throw new Error(
@@ -4502,8 +4537,28 @@ function extractAssistantAnswerText(node) {
   }
 
   if (!node) return "";
-  const prunedAssistant = node.cloneNode(true);
+  const prunedAssistant = SITE_ADAPTER?.siteId === "chatgpt"
+    ? cloneAssistantMessageForExport(node)
+    : node.cloneNode(true);
   pruneAssistantStatusNodes(prunedAssistant);
+  if (SITE_ADAPTER?.siteId === "chatgpt") {
+    // Generated image cards can be siblings of the Markdown owner, including
+    // image-only answers. Keep their position within this assistant turn.
+    if (prunedAssistant.querySelector("img")) {
+      return htmlToMarkdown(prunedAssistant.innerHTML).trim();
+    }
+    const selector = '[data-markdown-text-style="assistant-message"]';
+    const blocks = prunedAssistant.matches(selector)
+      ? [prunedAssistant]
+      : Array.from(prunedAssistant.querySelectorAll(selector))
+        .filter((block) => !block.parentElement?.closest(selector));
+    if (blocks.length > 0) {
+      // Preserve the complete reply, including headings, lists and multiple
+      // paragraphs. Picking the longest <p> silently discards the rest.
+      return blocks.map((block) => htmlToMarkdown(block.innerHTML).trim())
+        .filter(Boolean).join("\n\n");
+    }
+  }
   return extractBestAssistantAnswerCandidate(prunedAssistant);
 }
 
@@ -4536,9 +4591,21 @@ function pruneAssistantStatusNodes(root) {
     ...thinkingPrune,
     "[role='status']",
     "progress",
+    ...(SITE_ADAPTER?.siteId === "chatgpt" ? [
+      ".sr-only", ".screen-reader-only", ".visually-hidden",
+      "[hidden]", "[aria-hidden='true']",
+      "h4[data-conversation-role]",
+    ] : []),
   ];
   for (const sel of selectors) {
-    root.querySelectorAll(sel).forEach((node) => node.remove());
+    root.querySelectorAll(sel).forEach((node) => {
+      if ((sel === "button" || sel === "[role='button']") &&
+          node.querySelector("img[data-sync-zotero-image]")) {
+        node.replaceWith(...node.childNodes);
+      } else {
+        node.remove();
+      }
+    });
   }
 }
 
@@ -4912,6 +4979,68 @@ function removeTransientMessageNodes(root) {
   }
 }
 
+const MESSAGE_NODE_SELECTOR_FALLBACK =
+  "[data-message-author-role], [data-conversation-role], [data-turn], [data-user-message-bubble], [data-content-search-unit-key]";
+
+/** Whether a subtree carries any message node other than the one given. */
+function holdsOtherMessages(root, node) {
+  const selector =
+    SITE_ADAPTER?.conversationMessageSelector || MESSAGE_NODE_SELECTOR_FALLBACK;
+  try {
+    return Array.from(root.querySelectorAll(selector)).some(
+      (entry) => entry !== node && !node.contains(entry),
+    );
+  } catch (_) {
+    return true;
+  }
+}
+
+/**
+ * A submitted file card is rendered beside the bubble rather than inside the
+ * message node. Walk out from the message while the subtree still holds this
+ * message and no other one, so the boundary is structural and does not depend
+ * on a site's turn attribute (ChatGPT's `conversation-turn` testid is gone).
+ * Stopping at the first foreign message keeps the assistant's citation chips
+ * out of the evidence.
+ */
+function widenUserAttachmentScope(node) {
+  // 1. Ancestors that still hold only this message: a card rendered inside the
+  //    turn wrapper, next to the bubble.
+  let scope = node;
+  for (let depth = 0; depth < 4; depth++) {
+    const parent = scope.parentElement;
+    if (!parent || holdsOtherMessages(parent, node)) break;
+    scope = parent;
+    const attachments = extractAttachmentNames(scope).filter(
+      isDocumentAttachmentName,
+    );
+    if (attachments.length) return { scope, attachments };
+  }
+  // 2. Blocks directly above the message: the submitted card is usually a
+  //    sibling of the bubble rather than an ancestor's child. A sibling that
+  //    holds a message of its own is another turn and is never read.
+  scope = node;
+  for (let depth = 0; depth < 4 && scope.parentElement; depth++) {
+    let sibling = scope.previousElementSibling;
+    for (let steps = 0; sibling && steps < 2; steps++) {
+      if (!holdsOtherMessages(sibling, node)) {
+        const attachments = extractAttachmentNames(sibling).filter(
+          isDocumentAttachmentName,
+        );
+        if (attachments.length) return { scope: sibling, attachments };
+      }
+      sibling = sibling.previousElementSibling;
+    }
+    scope = scope.parentElement;
+  }
+  return { scope, attachments: [] };
+}
+
+/** Image markers are chrome when a turn is read as a whole. */
+function isDocumentAttachmentName(name) {
+  return !/^image(?:_\d+)?$/i.test(String(name || "").trim());
+}
+
 function extractAttachmentNames(node) {
   if (SITE_ADAPTER?.extractAttachmentNames) return SITE_ADAPTER.extractAttachmentNames(node);
   if (!node) return [];
@@ -4939,23 +5068,63 @@ function extractAttachmentNames(node) {
       }
     });
   }
-  // DeepSeek currently renders submitted file cards with generated class names.
-  // Recover PDF names only from compact card-like regions that also expose a
-  // PDF type/size label, avoiding ordinary prompt text that happens to mention
-  // a filename.
+  // Sites render submitted file cards with generated class names, and the
+  // visible name is often shortened ("…Co…") while an attribute keeps the whole
+  // one. Recover evidence only from compact card-like regions, so ordinary
+  // prompt text that merely mentions a filename still stays out.
+  const pushName = (value) => {
+    const text = shared.normalizeComposerText(value || "");
+    if (!text || text.length < 2) return;
+    if (/^(pdf|papers?)$/i.test(text)) return;
+    if (!names.includes(text)) names.push(text);
+  };
+  for (const element of node.querySelectorAll("[title], [aria-label], [data-filename]")) {
+    for (const attribute of ["title", "aria-label", "data-filename"]) {
+      const value = element.getAttribute?.(attribute);
+      if (value && /\.pdf(?:\b|$)/i.test(value)) pushName(value);
+    }
+  }
+  // A type or size label rendered as its own element is what separates a card
+  // from a sentence that happens to mention a PDF.
+  const hasCardTypeLabel = (card) =>
+    Array.from(card.querySelectorAll("*")).some((entry) => {
+      const label = shared.normalizeComposerText(
+        entry.getAttribute?.("aria-label") || entry.textContent || "",
+      );
+      return /^pdf$/i.test(label) || /^\d+(?:\.\d+)?\s*(?:KB|MB|GB)$/i.test(label);
+    });
   node.querySelectorAll("div, span").forEach((element) => {
     const text = shared.normalizeComposerText(element.textContent || "");
-    if (!/\.pdf$/i.test(text) || text.length > 300) return;
+    if (text.length > 200) return;
+    const named = /\.pdf(?:\b|$)/i.test(text);
+    const shortened = !named && text.length >= 4 && /(?:…|\.\.\.)/.test(text);
+    if (!named && !shortened) return;
+    // Only the innermost carrier counts, or a card would report its own name
+    // a second time through its container.
+    const carries = (entry) => {
+      const childText = shared.normalizeComposerText(entry.textContent || "");
+      return /\.pdf(?:\b|$)/i.test(childText) ||
+        (childText.length >= 4 && /(?:…|\.\.\.)/.test(childText));
+    };
+    if (Array.from(element.children || []).some(carries)) return;
 
     let card = element.parentElement;
     for (let depth = 0; depth < 4 && card; depth++) {
       const cardText = shared.normalizeComposerText(card.textContent || "");
-      if (
-        shared.attachmentEvidenceMatchesFilename(cardText, text) &&
-        (/\bPDF\b/i.test(cardText) ||
-          /\b\d+(?:\.\d+)?\s*(?:KB|MB|GB)\b/i.test(cardText))
-      ) {
-        if (!names.includes(text)) names.push(text);
+      if (cardText.length > 300) break;
+      const containsName = shared.attachmentEvidenceMatchesFilename(cardText, text);
+      // A card states its type either in a child element or at the end of its
+      // own text; a sentence that merely mentions a PDF does neither.
+      const labelled = shortened
+        ? hasCardTypeLabel(card) ||
+          /(?:^|\s)PDF$/i.test(cardText) ||
+          /\d+(?:\.\d+)?\s*(?:KB|MB|GB)$/i.test(cardText)
+        : /\bPDF\b/i.test(cardText) || /\b\d+(?:\.\d+)?\s*(?:KB|MB|GB)\b/i.test(cardText);
+      if (containsName && labelled) {
+        pushName(text);
+        // The classifier reads the drop as a PDF from the card label, so keep
+        // that label as evidence when the name lost its extension.
+        if (!named) pushName(cardText.slice(0, 160));
         break;
       }
       card = card.parentElement;
@@ -5006,7 +5175,67 @@ function extractUserMessageText(node) {
   return text;
 }
 
+function getChatGPTMessageRole(node) {
+  const unitRole = (node.getAttribute("data-content-search-unit-key") || node.getAttribute("data-chatgpt-search-unit-key"))?.match(/:(user|assistant)$/)?.[1];
+  return node.getAttribute("data-message-author-role") ||
+    node.getAttribute("data-conversation-role") ||
+    node.getAttribute("data-turn") ||
+    unitRole ||
+    (node.hasAttribute("data-user-message-bubble") ? "user" : null);
+}
+
+function isVisibleChatGPTMessage(node) {
+  if (node.matches(".sr-only, .screen-reader-only, .visually-hidden")) return false;
+  // display:contents has no box of its own, but can contain visible messages.
+  // Check ancestors too: stale conversation trees can remain mounted and hidden.
+  for (let ancestor = node; ancestor; ancestor = ancestor.parentElement) {
+    const style = window.getComputedStyle(ancestor);
+    if (ancestor.hidden || ancestor.getAttribute("aria-hidden") === "true" ||
+        style.display === "none" || style.visibility === "hidden") return false;
+  }
+  if (isVisibleElement(node)) return true;
+  return window.getComputedStyle(node).display === "contents" &&
+    Array.from(node.children).some(isVisibleChatGPTMessage);
+}
+
+function getChatGPTMessageNodes({ includeHidden = false } = {}) {
+  const candidates = Array.from(document.querySelectorAll(SITE_ADAPTER.conversationMessageSelector))
+    .map((node) => {
+      // In the current renderer the role attribute belongs to an sr-only
+      // heading; the actual answer is its sibling inside the search unit.
+      const unit = node.closest("[data-content-search-unit-key], [data-chatgpt-search-unit-key]");
+      return unit && getChatGPTMessageRole(unit) === getChatGPTMessageRole(node)
+        ? unit : node;
+    });
+  const nodes = Array.from(new Set(candidates))
+    .filter((node) => {
+      const role = getChatGPTMessageRole(node);
+      return (role === "user" || role === "assistant") && (includeHidden || isVisibleChatGPTMessage(node));
+    });
+  // Prefer the semantic message container over its text bubble, and prefer
+  // that container over a legacy turn shell. Mixed layouts must not duplicate
+  // turns or give a user prompt and its answer the same identity.
+  const messages = nodes.filter((node) =>
+    node.hasAttribute("data-message-author-role") || node.hasAttribute("data-conversation-role") ||
+    node.hasAttribute("data-content-search-unit-key") || node.hasAttribute("data-chatgpt-search-unit-key"),
+  );
+  return nodes.filter((node) => {
+    const role = getChatGPTMessageRole(node);
+    if (messages.includes(node)) {
+      return !messages.some((other) => other !== node &&
+        getChatGPTMessageRole(other) === role && other.contains(node));
+    }
+    if (messages.some((other) => getChatGPTMessageRole(other) === role &&
+      (node.contains(other) || other.contains(node)))) return false;
+    return !nodes.some((other) => other !== node &&
+      getChatGPTMessageRole(other) === role && other.contains(node));
+  });
+}
+
 function getConversationMessageNodes() {
+  if (SITE_ADAPTER?.getConversationMessageNodes) {
+    return SITE_ADAPTER.getConversationMessageNodes();
+  }
   const selector = SITE_ADAPTER?.conversationMessageSelector || "[data-message-author-role]";
   const nodes = Array.from(document.querySelectorAll(selector));
   return nodes.filter((node) => {
@@ -5035,11 +5264,21 @@ function buildTranscriptMessageKey(node, role, index, text, attachments = []) {
   return `${role}-${index}-${simpleHash(signature)}`;
 }
 
+/** Diagnostic only: where each user turn's attachment evidence was read from. */
+const userAttachmentScopes = new Map();
+
 function extractNormalizedMessage(node, index) {
   const role = SITE_ADAPTER?.getMessageRole?.(node) || node.getAttribute("data-message-author-role");
   if (role !== "user" && role !== "assistant") return null;
 
-  const attachments = extractAttachmentNames(node);
+  let attachments = extractAttachmentNames(node);
+  let attachmentScope = attachments.length ? "message" : "message-empty";
+  if (role === "user" && !attachments.length) {
+    const widened = widenUserAttachmentScope(node);
+    attachments = widened.attachments;
+    if (attachments.length) attachmentScope = "widened";
+    else if (widened.scope !== node) attachmentScope = "widened-empty";
+  }
   const thinking =
     role === "assistant"
       ? shared.normalizeComposerText(extractAssistantThinkingText(node) || "")
@@ -5050,14 +5289,16 @@ function extractNormalizedMessage(node, index) {
   const cleanedText =
     role === "assistant" && shared.isPlaceholderAssistantText(text) ? "" : text;
 
+  const messageKey = buildTranscriptMessageKey(
+    node,
+    role,
+    index,
+    cleanedText || thinking,
+    attachments,
+  );
+  if (role === "user") userAttachmentScopes.set(messageKey, attachmentScope);
   return {
-    messageKey: buildTranscriptMessageKey(
-      node,
-      role,
-      index,
-      cleanedText || thinking,
-      attachments,
-    ),
+    messageKey,
     role,
     text: cleanedText,
     thinking: thinking || "",
@@ -5068,6 +5309,7 @@ function extractNormalizedMessage(node, index) {
 function extractConversationTranscript() {
   const nodes = getConversationMessageNodes();
   const messages = [];
+  userAttachmentScopes.clear();
 
   nodes.forEach((node, index) => {
     const message = extractNormalizedMessage(node, index);
@@ -5586,11 +5828,131 @@ function katexVisibleText(el) {
     .trim();
 }
 
+/** Only portable image URLs may leave the browser (blob URLs are tab-local). */
+function portableImageUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^data:image\/(?:png|jpeg|gif|webp|avif|svg\+xml);base64,[a-z0-9+/=\s]+$/i.test(raw)) return raw;
+  // ChatGPT's generated diagrams are often URL-encoded SVG <img> sources.
+  // Keep them in passive image context, with the base64 form Zotero accepts.
+  const svg = raw.match(/^data:image\/svg\+xml(?:;charset=[^;,]+)?,([\s\S]+)$/i);
+  if (svg && raw.length <= 2 * 1024 * 1024) {
+    try {
+      const bytes = new TextEncoder().encode(decodeURIComponent(svg[1]));
+      const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+      return `data:image/svg+xml;base64,${btoa(binary)}`;
+    } catch (_) {
+      return "";
+    }
+  }
+  try {
+    const url = new URL(raw, document.baseURI || undefined);
+    return /^(https?:)$/.test(url.protocol) && !url.username && !url.password ? url.href : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+const assistantImageSnapshots = new WeakMap();
+
+/** Copy already loaded pixels where the browser permits it; never refetch. */
+function cloneAssistantMessageForExport(node) {
+  const clone = node.cloneNode(true);
+  const originals = Array.from(node.querySelectorAll("img"));
+  let remainingBytes = 6 * 1024 * 1024;
+  clone.querySelectorAll("img").forEach((image, index) => {
+    const original = originals[index];
+    const width = original.width || Number(original.getAttribute("width"));
+    const height = original.height || Number(original.getAttribute("height"));
+    if (original.getAttribute("aria-hidden") === "true" ||
+        original.getAttribute("role") === "presentation" ||
+        (width > 0 && height > 0 && width <= 32 && height <= 32) ||
+        /(?:^|[-_\s])(avatar|favicon)(?:$|[-_\s])/i.test(original.className || "")) {
+      image.remove();
+      return;
+    }
+    const src = original.currentSrc || original.getAttribute("src") || "";
+    let exported = portableImageUrl(src);
+    if (!exported.startsWith("data:") && original.complete && original.naturalWidth > 0 && original.naturalHeight > 0 && index < 12) {
+      let cached = assistantImageSnapshots.get(original);
+      if (!cached || cached.src !== src) {
+        let dataUrl = "";
+        try {
+          const scale = Math.min(1, 2048 / Math.max(original.naturalWidth, original.naturalHeight));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(original.naturalWidth * scale));
+          canvas.height = Math.max(1, Math.round(original.naturalHeight * scale));
+          canvas.getContext("2d").drawImage(original, 0, 0, canvas.width, canvas.height);
+          const encoded = canvas.toDataURL("image/png");
+          if (encoded.length <= 2 * 1024 * 1024 && portableImageUrl(encoded)) dataUrl = encoded;
+        } catch (_) {
+          // Cross-origin pixels may be protected. Preserve the public/signed
+          // URL instead; do not bypass CORS or copy browser credentials.
+        }
+        cached = { src, dataUrl };
+        assistantImageSnapshots.set(original, cached);
+      }
+      if (cached.dataUrl && cached.dataUrl.length <= remainingBytes) {
+        exported = cached.dataUrl;
+        remainingBytes -= exported.length;
+      }
+    }
+    image.setAttribute("src", exported);
+    image.removeAttribute("srcset");
+    image.setAttribute("data-sync-zotero-image", "true");
+  });
+  return clone;
+}
+
 /** Very lightweight HTML → Markdown converter for ChatGPT's response format. */
 function htmlToMarkdown(html) {
   // Use a temporary DOM element
   const div = document.createElement("div");
   div.innerHTML = html;
+
+  const codeLanguage = (code) =>
+    String(code?.className || "").match(/(?:^|\s)language-([\w+#.-]+)/)?.[1] || "";
+  // textContent preserves spaces but omits explicit HTML line breaks.
+  const codeText = (node) => node.nodeType === Node.TEXT_NODE
+    ? node.textContent
+    : node.nodeName?.toLowerCase() === "br"
+      ? "\n"
+      : Array.from(node.childNodes).map(codeText).join("");
+
+  // Some code cards use divs instead of a semantic <pre>. Treat their code
+  // as a block before visiting ordinary inline <code>, and discard only a
+  // surrounding card whose other content is toolbar chrome/a language label.
+  for (const code of div.querySelectorAll("code")) {
+    if (code.closest("pre")) continue;
+    const lang = codeLanguage(code);
+    const content = codeText(code);
+    const preformatted = /(?:^|\s)whitespace-pre(?:-wrap)?!?(?:\s|$)/.test(code.className || "") ||
+      /^(pre|pre-wrap|break-spaces)$/.test(code.style?.whiteSpace || "");
+    if (!lang && !preformatted && !content.includes("\n")) continue;
+
+    let card = code;
+    for (let parent = code.parentElement;
+      parent && parent !== div && parent.tagName?.toLowerCase() === "div";
+      parent = parent.parentElement) {
+      if (parent.querySelectorAll("code, pre").length !== 1 ||
+          parent.querySelector("p, ul, ol, blockquote, table, h1, h2, h3, h4, h5, h6")) break;
+      const chrome = parent.cloneNode(true);
+      chrome.querySelectorAll("code, button, [role='button'], svg, [data-markdown-copy='exclude']").forEach((el) => el.remove());
+      const label = (chrome.textContent || "").trim().toLowerCase();
+      if (label && label !== lang.toLowerCase() &&
+          !/^(纯文本|純文字|純文本|plain\s*text|text)$/.test(label)) break;
+      card = parent;
+    }
+    const pre = document.createElement("pre");
+    pre.appendChild(code.cloneNode(true));
+    card.replaceWith(pre);
+  }
+
+  // Keep code out of prose whitespace cleanup. Restore after list/quote
+  // formatting, repeating the container prefix on every literal code line.
+  const codeBlocks = [];
+  let codeTokenPrefix = "LLMZOTEROCODEBLOCK";
+  while ((div.textContent || "").includes(codeTokenPrefix)) codeTokenPrefix += "X";
 
   function nodeToMd(node, indent = "") {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent;
@@ -5661,9 +6023,12 @@ function htmlToMarkdown(html) {
       }
       case "pre": {
         const codeEl = node.querySelector("code");
-        const lang = codeEl?.className?.match(/language-(\w+)/)?.[1] ?? "";
-        const content = codeEl ? codeEl.textContent : node.textContent;
-        return `\n\`\`\`${lang}\n${content}\n\`\`\`\n`;
+        const lang = codeLanguage(codeEl);
+        const content = codeText(codeEl || node);
+        const longestRun = (content.match(/`+/g) || []).reduce((n, run) => Math.max(n, run.length), 0);
+        const fence = "`".repeat(Math.max(3, longestRun + 1));
+        const index = codeBlocks.push(`${fence}${lang}\n${content}\n${fence}`) - 1;
+        return `\n${indent}${codeTokenPrefix}${index}END\n`;
       }
       case "ul": {
         // "- " marker → nested content aligns under two spaces
@@ -5693,8 +6058,12 @@ function htmlToMarkdown(html) {
         return "";
       }
       case "img": {
-        // Images are not synced; keep the author-provided alt text.
-        return (node.getAttribute("alt") || "").trim();
+        const alt = (node.getAttribute("alt") || "").trim();
+        const src = portableImageUrl(node.getAttribute("src"));
+        if (!src) return alt;
+        const label = alt.replace(/([\\[\]])/g, "\\$1").replace(/[\r\n]/g, " ");
+        const destination = src.replace(/</g, "%3C").replace(/>/g, "%3E");
+        return `![${label}](<${destination}>)`;
       }
       case "svg": {
         // Labeled icons degrade to their label; decorative SVGs stay silent.
@@ -5721,7 +6090,14 @@ function htmlToMarkdown(html) {
     return [header, sep, ...lines.slice(1)].join("\n");
   }
 
-  return nodeToMd(div).replace(/\n{3,}/g, "\n\n").trim();
+  const markdown = nodeToMd(div).replace(/\n{3,}/g, "\n\n").trim();
+  return markdown.replace(
+    new RegExp(`(^[ \\t>]*(?:(?:[-+*]|\\d+\\.) )?)?${codeTokenPrefix}(\\d+)END`, "gm"),
+    (_, prefix = "", index) => {
+      const continuation = prefix.replace(/[-+*] |\d+\. /g, (marker) => " ".repeat(marker.length));
+      return prefix + codeBlocks[Number(index)].replace(/\n/g, `\n${continuation}`);
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -6799,8 +7175,202 @@ async function handleDeleteChat(chatId) {
   return { success: true };
 }
 
-// Message listener for the DELETE command
+// Rename through the provider UI, scoped to a single confirmed conversation.
+async function handleRenameChat(request) {
+  const normalize = (value) => shared.normalizeComposerText(value).replace(/\s+/g, " ").trim();
+  const title = normalize(request.title);
+  const expired = () => Number.isFinite(request.expiresAt) && Date.now() >= request.expiresAt;
+  if (expired()) return { status: "failed", error: "标题任务已超时，请重试。" };
+  if (SITE_ADAPTER?.siteId !== "chatgpt" || !title || Array.from(title).length > 120 ||
+      !shared.conversationUrlsMatch(getCurrentChatUrl(), request.chatUrl) ||
+      getCurrentChatId() !== request.chatId) {
+    return { status: "failed", error: "会话地址或标题无效。" };
+  }
+  const waitFor = async (read, timeoutMs = 5000) => {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      if (expired()) throw new Error("标题任务已超时，请重试。");
+      if (!shared.conversationUrlsMatch(getCurrentChatUrl(), request.chatUrl)) throw new Error("命名时会话已切换。");
+      const value = read();
+      if (value) return value;
+      await workerSleep(150);
+    } while (Date.now() < deadline);
+    return null;
+  };
+  const linkForChat = () => Array.from(document.querySelectorAll('nav a[href]'))
+    .find((link) => shared.conversationUrlsMatch(link.href, request.chatUrl));
+  const visible = (selector) => Array.from(document.querySelectorAll(selector)).filter(isVisibleElement);
+  // Signals the sidebar overflow control has carried across ChatGPT builds.
+  const MENU_BUTTON_SIGNALS = [
+    'button[aria-haspopup="menu"]',
+    'button[aria-haspopup="true"]',
+    'button[data-testid*="option" i]',
+    'button[data-testid*="menu" i]',
+    'button[aria-label*="option" i]',
+    'button[aria-label*="more" i]',
+    'button[aria-label*="更多"]',
+    'button[aria-label*="选项"]',
+    'button[aria-label*="菜单"]',
+  ];
+  const menuButtonsIn = (node) => {
+    const found = new Set();
+    for (const selector of MENU_BUTTON_SIGNALS)
+      for (const entry of node.querySelectorAll(selector)) found.add(entry);
+    return [...found];
+  };
+  // The smallest subtree holding this conversation and no other one. The
+  // overflow control sits somewhere inside it, and touching anything wider
+  // could rename a different chat.
+  const pickMenuButton = (link) => {
+    let node = link.parentElement;
+    let row = null;
+    for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+      const links = Array.from(node.querySelectorAll('a[href]')).filter((entry) => /\/c\//.test(entry.href));
+      // A wider container that already spans other conversations is the edge
+      // of what this task may touch; nothing above it is safer.
+      if (links.some((entry) => !shared.conversationUrlsMatch(entry.href, request.chatUrl))) break;
+      row = node;
+      const candidates = menuButtonsIn(node);
+      const insideLink = candidates.find((entry) => link.contains(entry));
+      if (insideLink) return { row, button: insideLink };
+      // Ambiguity inside one row is never resolved by guessing.
+      if (candidates.length) return { row, button: candidates.length === 1 ? candidates[0] : null };
+    }
+    return { row, button: null };
+  };
+  // Hover-gated controls need the pointer sequence, not just mouseover.
+  const hoverNode = (node) => {
+    for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"])
+      node.dispatchEvent(new MouseEvent(type, { bubbles: !type.endsWith("enter") }));
+  };
+  // Radix menus open on pointerdown, so a bare click() never reaches them.
+  const pressControl = (node) => {
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"])
+      node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }));
+  };
+  const pressKey = (node, key) => {
+    for (const type of ["keydown", "keyup"])
+      node.dispatchEvent(new KeyboardEvent(type, { key, code: key, bubbles: true, cancelable: true }));
+  };
+  const describeMenu = () => {
+    const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+    if (!menus.length) return "菜单未弹出";
+    const entries = Array.from(menus[menus.length - 1].children).slice(0, 6).map((child) =>
+      `${child.getAttribute("role") || child.tagName.toLowerCase()}:${normalize(child.textContent).slice(0, 12)}`);
+    return entries.length ? entries.join(" | ") : "菜单为空";
+  };
+  const describeButtons = (node) => {
+    const labels = Array.from(node.querySelectorAll("button")).slice(0, 8).map((button) =>
+      normalize(button.getAttribute("aria-label") || button.getAttribute("data-testid") || button.textContent || "?").slice(0, 20));
+    return labels.length ? labels.join(" | ") : "行内无按钮";
+  };
+  try {
+    if (!await waitFor(() => !isConversationStillRunning(), 12_000)) throw new Error("回答仍在生成，请稍后重试命名。");
+    const link = await waitFor(linkForChat, 10_000);
+    if (!link) throw new Error("侧栏中未找到目标会话，请展开 ChatGPT 历史记录后重试。");
+    const oldTitle = normalize(link.textContent);
+    if (oldTitle === title) return { status: "synced", title };
+    if (!request.expectedTitle || oldTitle !== normalize(request.expectedTitle)) {
+      return { status: "conflict", title: oldTitle, error: "网页标题已改变，请重新预览后命名。" };
+    }
+    if (visible('[role="menu"], [role="dialog"]').length) throw new Error("请先关闭 ChatGPT 中打开的菜单或对话框。");
+    let row = null;
+    const menuButton = await waitFor(() => {
+      const picked = pickMenuButton(link);
+      if (picked.row) row = picked.row;
+      if (picked.button) return picked.button;
+      hoverNode(link);
+      if (row) hoverNode(row);
+      return null;
+    });
+    if (!menuButton) throw new Error(`未找到会话操作菜单（${describeButtons(row || link.parentElement)}）；请重试或更新扩展。`);
+    pressControl(menuButton);
+    // Radix opens on pointerdown, some builds only on the keyboard, and the
+    // item roles have not always been menuitem — try each before giving up.
+    let keyboardTried = false;
+    const rename = await waitFor(() => {
+      let items = visible('[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]');
+      if (!items.length) {
+        const menus = visible('[role="menu"]');
+        if (menus.length === 1)
+          items = Array.from(menus[0].querySelectorAll('button, a, [role="option"], [role="menuitem"]')).filter(isVisibleElement);
+      }
+      const exact = items.find((entry) =>
+        /^(rename|rename chat|重命名|重新命名|重命名对话|重新命名對話)$/i.test(normalize(entry.textContent)));
+      const loose = items.filter((entry) => /rename|重命名/i.test(normalize(entry.textContent)));
+      if (exact) return exact;
+      if (loose.length === 1) return loose[0];
+      if (!keyboardTried && !items.length) {
+        keyboardTried = true;
+        pressKey(menuButton, "Enter");
+      }
+      return null;
+    });
+    if (!rename) throw new Error(`未找到重命名操作（${describeMenu()}）；请重试或更新扩展。`);
+    pressControl(rename);
+    const input = await waitFor(() => {
+      const fresh = linkForChat();
+      const candidates = new Set();
+      for (const scope of [fresh, fresh?.parentElement, row, link.parentElement]) {
+        if (!scope) continue;
+        for (const entry of scope.querySelectorAll('input[type="text"], input:not([type])'))
+          if (isVisibleElement(entry)) candidates.add(entry);
+      }
+      if (!candidates.size) {
+        const dialogs = visible('[role="dialog"]');
+        if (dialogs.length === 1)
+          for (const entry of dialogs[0].querySelectorAll('input[type="text"], input:not([type])'))
+            if (isVisibleElement(entry)) candidates.add(entry);
+      }
+      if (candidates.size === 1) return [...candidates][0];
+      // The editor can replace the whole row; a single visible text field is
+      // still unambiguous because no other menu or dialog was open.
+      const everywhere = Array.from(document.querySelectorAll('input[type="text"], input:not([type])')).filter(isVisibleElement);
+      return everywhere.length === 1 ? everywhere[0] : null;
+    });
+    if (!input) throw new Error("未找到唯一的标题输入框。");
+    const editTitle = normalize(input.value);
+    // An empty field is a fresh editor, not a competing rename.
+    if (editTitle && editTitle !== oldTitle && editTitle !== title) return { status: "conflict", error: "标题编辑值已改变，请重新预览。" };
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (setter) setter.call(input, title); else input.value = title;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    const dialog = input.closest('[role="dialog"]');
+    if (dialog) {
+      const buttons = Array.from(dialog.querySelectorAll("button")).filter((button) =>
+        !button.disabled && isVisibleElement(button) && /^(save|保存|儲存|确认|確定)$/i.test(normalize(button.textContent)));
+      if (buttons.length !== 1) throw new Error("未找到唯一的保存按钮。");
+      pressControl(buttons[0]);
+    } else {
+      pressKey(input, "Enter");
+    }
+    let readback = 0;
+    let blurred = false;
+    if (!await waitFor(() => {
+      readback++;
+      const savedLink = linkForChat();
+      if (savedLink && !input.isConnected && normalize(savedLink.textContent) === title) return true;
+      // Inline editors also commit on blur, so a failed Enter gets one.
+      if (!blurred && readback > 8) {
+        blurred = true;
+        try { input.blur?.(); } catch (_) { /* not every host has blur */ }
+      }
+      return false;
+    }, 8000)) throw new Error("保存后未读回目标标题，请刷新历史后重试。");
+    await scrapeHistory({ force: true });
+    return { status: "synced", title };
+  } catch (error) {
+    return { status: "failed", error: error.message || String(error) };
+  }
+}
+
+// Message listener for history mutations.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.type === "RENAME_CHAT") {
+    handleRenameChat(request).then(sendResponse).catch((error) => sendResponse({ status: "failed", error: error.message }));
+    return true;
+  }
   if (request.type === "DELETE_CHAT") {
     handleDeleteChat(request.chatId)
       .then(res => sendResponse(res))

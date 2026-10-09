@@ -109,11 +109,11 @@ test("fixture passes", () => assert.equal(1, 1));
   const fakeGit = path.join(fakeBin, "git");
   fs.writeFileSync(
     fakeGit,
-    `#!/usr/bin/env node
+    String.raw`#!/usr/bin/env node
 const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 if (args.join(" ") === "remote get-url origin") {
-  process.stdout.write("git@github.com:yilewang/sync-for-zotero.git\\n");
+  process.stdout.write("git@github.com:yilewang/sync-for-zotero.git\n");
   process.exit(0);
 }
 const result = spawnSync(process.env.REAL_GIT, args, {
@@ -129,13 +129,13 @@ process.exit(result.status ?? 1);
   const fakeGh = path.join(fakeBin, "gh");
   fs.writeFileSync(
     fakeGh,
-    `#!/usr/bin/env node
+    String.raw`#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 const stateFile = process.env.FAKE_GH_STATE;
 const readState = () => JSON.parse(fs.readFileSync(stateFile, "utf8"));
 const writeState = (state) =>
-  fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\\n");
+  fs.writeFileSync(stateFile, JSON.stringify(state, null, 2) + "\n");
 const flagValue = (name) => {
   const index = args.indexOf(name);
   return index === -1 ? null : args[index + 1];
@@ -151,10 +151,10 @@ if (args[0] === "release" && args[1] === "view") {
   const tag = explicitTag || state.latestTag;
   const release = state.releases[tag];
   if (!release) {
-    process.stderr.write("release not found\\n");
+    process.stderr.write("release not found\n");
     process.exit(1);
   }
-  process.stdout.write(JSON.stringify(release) + "\\n");
+  process.stdout.write(JSON.stringify(release) + "\n");
   process.exit(0);
 }
 
@@ -172,7 +172,7 @@ if (args[0] === "release" && args[1] === "create") {
     publishedAt: null,
   };
   writeState(state);
-  process.stdout.write(state.releases[tag].url + "\\n");
+  process.stdout.write(state.releases[tag].url + "\n");
   process.exit(0);
 }
 
@@ -190,12 +190,12 @@ if (args[0] === "release" && args[1] === "edit") {
     state.latestTag = tag;
   }
   writeState(state);
-  process.stdout.write(release.url + "\\n");
+  process.stdout.write(release.url + "\n");
   process.exit(0);
 }
 
 if (args[0] === "run" && args[1] === "list") {
-  process.stdout.write("[]\\n");
+  process.stdout.write("[]\n");
   process.exit(0);
 }
 
@@ -206,7 +206,7 @@ if (args[0] === "workflow" && args[1] === "run") {
   state.releases[tag].assets = [{ name: "extension.zip" }];
   writeState(state);
   process.stdout.write(
-    "https://github.com/yilewang/sync-for-zotero/actions/runs/123\\n",
+    "https://github.com/yilewang/sync-for-zotero/actions/runs/123\n",
   );
   process.exit(0);
 }
@@ -215,7 +215,7 @@ if (args[0] === "run" && args[1] === "watch") {
   process.exit(0);
 }
 
-process.stderr.write("Unsupported fake gh command: " + args.join(" ") + "\\n");
+process.stderr.write("Unsupported fake gh command: " + args.join(" ") + "\n");
 process.exit(2);
 `,
   );
