@@ -11,6 +11,8 @@ history recovery, MV3 keepalive and current ChatGPT composer support.
   diagrams. Copy already loaded pixels when permitted, with size limits; keep
   HTTP(S) URLs when the browser protects cross-origin pixels.
 - Publish this maintained companion from Qingyun0118/sync-for-zotero.
+- Verify the complete extractor, rename protocol and release CLI test suites
+  before publishing the archive.
 
 Use with LLM for Zotero v3.9.12. Download extension.zip, update the fixed
 unpacked extension directory, reload the extension, and refresh chat pages.
