@@ -25,3 +25,6 @@ Original project by Yile Wang and contributors; original license retained.
 
 The main-branch publisher creates and verifies its version tag only after tests
 and ZIP integrity checks pass. It refuses to reuse a tag for a different commit.
+
+The maintenance guide uses main-branch publishing by default and avoids a
+second manual tag push for the same version.

@@ -18,9 +18,10 @@ yilewang/sync-for-zotero。工作区干净后，在新分支中执行 `git fetch
 渲染修复，更新 `extension/manifest.json` 版本，版本必须大于已发布维护版
 与合并的上游版本，并更新 `RELEASE_NOTES.md`。
 
-执行 `npm ci`、`npm test` 和 `git diff --check`。合入 main 并推送 origin，
-再创建并推送与 manifest 版本一致的 `v版本号` 标签。标签工作流通过测试、
-版本检查和 ZIP 校验后发布扩展。只向 origin 推送。
+执行 `npm ci`、`npm test` 和 `git diff --check`。默认将已验证的更改合入
+main 并推送 origin；main 发布工作流会在测试及 ZIP 校验通过后自行创建
+与 manifest 版本一致的 `v版本号` 标签并发布。不要再手动推送同一版本
+标签，以免重复触发发布。只向 origin 推送。
 
 原发布 CLI 的 workflow_dispatch 路径仍可用于已有 draft release。
 
