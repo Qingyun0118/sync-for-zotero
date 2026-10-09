@@ -1,0 +1,11 @@
+Sync for Zotero
+
+Original project: Yile Wang and contributors
+https://github.com/yilewang/sync-for-zotero
+
+Maintained fork: Qingyun0118
+https://github.com/Qingyun0118/sync-for-zotero
+
+This maintained version merges upstream 0.0.18 with literature-title
+synchronization and code, whitespace, SVG and image extraction fixes.
+The original Apache License 2.0 is included in LICENSE.txt.

@@ -10,7 +10,8 @@ history recovery, MV3 keepalive and current ChatGPT composer support.
 - Preserve image-only answers, images outside Markdown owners and portable SVG
   diagrams. Copy already loaded pixels when permitted, with size limits; keep
   HTTP(S) URLs when the browser protects cross-origin pixels.
-- Publish this maintained companion from Qingyun0118/sync-for-zotero.
+- Publish this maintained companion from Qingyun0118/sync-for-zotero, including
+  the original Apache 2.0 license and project attribution in the archive.
 - Verify the complete extractor, rename protocol and release CLI test suites
   before publishing the archive.
 
