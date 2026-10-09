@@ -45,7 +45,7 @@ jobs:
       - name: Install Node.js dependencies
         run: npm ci
 
-      - name: Prepare version tag for a main branch release
+      - name: Prepare version for a main branch release
         if: github.event_name == 'push' && github.ref_type == 'branch'
         run: |
           version=$(node -p 'JSON.parse(require("fs").readFileSync("extension/manifest.json", "utf8")).version')
@@ -54,8 +54,6 @@ jobs:
             echo "$tag already exists; bump the version for a new release."
             exit 1
           fi
-          git tag "$tag"
-          git push origin "refs/tags/$tag"
           echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -71,6 +69,18 @@ jobs:
 
       - name: Verify release archive
         run: unzip -t extension.zip
+
+      - name: Create and verify the version tag after checks
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        run: |
+          if ! git rev-parse --verify "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git tag "$RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+          if [ "$(git rev-list -n 1 "$RELEASE_TAG")" != "$(git rev-parse HEAD)" ]; then
+            echo "$RELEASE_TAG points to a different commit; do not overwrite it."
+            exit 1
+          fi
 
       - name: Publish or update the extension archive
         run: |

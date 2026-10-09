@@ -22,3 +22,6 @@ Validation: all 296 automated tests pass, including the release CLI integration
 suite; the v0.0.19 archive passes ZIP integrity checks.
 
 Original project by Yile Wang and contributors; original license retained.
+
+The main-branch publisher creates and verifies its version tag only after tests
+and ZIP integrity checks pass. It refuses to reuse a tag for a different commit.
