@@ -2,7 +2,7 @@
 
 # Sync for Zotero
 
-一个 Chromium 扩展，作为 [LLM for Zotero](https://github.com/yilewang/llm-for-zotero) 插件的 **网页聊天桥接工具**。它通过浏览器将 Zotero 连接到 ChatGPT、DeepSeek 或 Google Gemini：上传 PDF 和图片、发送提示词、同步聊天操作，并将 Markdown 格式的结果返回给 Zotero。
+一个 Chromium 扩展，作为 [LLM for Zotero](https://github.com/Qingyun0118/llm-for-zotero) 插件的 **网页聊天桥接工具**。它通过浏览器将 Zotero 连接到 ChatGPT、DeepSeek 或 Google Gemini：上传 PDF 和图片、发送提示词、同步聊天操作，并将 Markdown 格式的结果返回给 Zotero。
 
 > **本扩展不是独立工具。** 需要配合 LLM for Zotero 插件（v3.7.17 或更高版本），并在插件设置中选择 **webchat 模式**。
 
@@ -15,7 +15,7 @@
 
 ## 前提条件
 
-- 安装了 [Zotero](https://www.zotero.org/) 及 **[LLM for Zotero](https://github.com/yilewang/llm-for-zotero) 插件 v3.7.17+**
+- 安装了 [Zotero](https://www.zotero.org/) 及 **[LLM for Zotero](https://github.com/Qingyun0118/llm-for-zotero) 插件 v3.7.17+**
 - 在 LLM for Zotero 设置中，将模式设置为 **webchat**
 - 一个 ChatGPT、DeepSeek 或 Google Gemini 账号，取决于你在 LLM for Zotero 中选择的网页聊天目标
 
@@ -47,7 +47,7 @@
 
 #### 方式 B：ZIP 下载（如果你是通过下载安装的）
 
-1. 从 [Releases](https://github.com/yilewang/sync-for-zotero/releases) 页面下载最新的 `extension.zip`
+1. 从 [Releases](https://github.com/Qingyun0118/sync-for-zotero/releases) 页面下载最新的 `extension.zip`
 2. 解压文件，用新的 `extension/` 文件夹 **替换** 旧的文件夹
 3. 打开浏览器的扩展管理页面（`chrome://extensions/` 或 `edge://extensions/`）
 4. 找到 "Sync for Zotero" 卡片，点击 **重新加载** (↻) 图标

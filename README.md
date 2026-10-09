@@ -4,7 +4,7 @@
 
 [中文说明](README_CN.md)
 
-A Chromium extension that works as the **webchat bridge** for the [LLM for Zotero](https://github.com/yilewang/llm-for-zotero) plugin. It connects Zotero to ChatGPT, DeepSeek, or Google Gemini via the browser: uploading PDFs and images, running prompts, syncing chat actions, and returning markdown results back to Zotero.
+A Chromium extension that works as the **webchat bridge** for the [LLM for Zotero](https://github.com/Qingyun0118/llm-for-zotero) plugin. It connects Zotero to ChatGPT, DeepSeek, or Google Gemini via the browser: uploading PDFs and images, running prompts, syncing chat actions, and returning markdown results back to Zotero.
 
 > **This extension is not a standalone tool.** It requires the LLM for Zotero plugin (v3.7.17 or later) with **webchat mode** selected in the plugin preferences.
 
@@ -17,7 +17,7 @@ A Chromium extension that works as the **webchat bridge** for the [LLM for Zoter
 
 ## Prerequisites
 
-- [Zotero](https://www.zotero.org/) with the **[LLM for Zotero](https://github.com/yilewang/llm-for-zotero) plugin v3.7.17+** installed
+- [Zotero](https://www.zotero.org/) with the **[LLM for Zotero](https://github.com/Qingyun0118/llm-for-zotero) plugin v3.7.17+** installed
 - In LLM for Zotero preferences, set the mode to **webchat**
 - A ChatGPT, DeepSeek, or Google Gemini account, depending on the webchat target selected in LLM for Zotero
 
@@ -49,7 +49,7 @@ When a new version is available, choose one of the following methods depending o
 
 #### Option B: ZIP download (if you downloaded the release)
 
-1. Download the latest `extension.zip` from the [Releases](https://github.com/yilewang/sync-for-zotero/releases) page
+1. Download the latest `extension.zip` from the [Releases](https://github.com/Qingyun0118/sync-for-zotero/releases) page
 2. Unzip the file and **replace** the old `extension/` folder with the new one
 3. Open your browser's extensions page (`chrome://extensions/` or `edge://extensions/`)
 4. Find the "Sync for Zotero" card and click the **reload** (↻) icon
