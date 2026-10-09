@@ -58,8 +58,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Validate tag and manifest version
-        run: npm run release:validate -- "$RELEASE_TAG"
+      - name: Validate version before creating the tag
+        run: |
+          node --input-type=module -e 'import { readFileSync } from "node:fs"; import { validateReleaseTag } from "./scripts/release.mjs"; validateReleaseTag(process.env.RELEASE_TAG, JSON.parse(readFileSync("extension/manifest.json", "utf8")).version);'
+          if git rev-parse --verify "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            npm run release:validate -- "$RELEASE_TAG"
+          fi
 
       - name: Run tests
         run: npm test
@@ -81,6 +85,9 @@ jobs:
             echo "$RELEASE_TAG points to a different commit; do not overwrite it."
             exit 1
           fi
+
+      - name: Validate the checked release tag
+        run: npm run release:validate -- "$RELEASE_TAG"
 
       - name: Publish or update the extension archive
         run: |
