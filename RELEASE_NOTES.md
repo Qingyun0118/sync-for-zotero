@@ -17,4 +17,7 @@ history recovery, MV3 keepalive and current ChatGPT composer support.
 Use with LLM for Zotero v3.9.12. Download extension.zip, update the fixed
 unpacked extension directory, reload the extension, and refresh chat pages.
 
+Validation: all 296 automated tests pass, including the release CLI integration
+suite; the v0.0.19 archive passes ZIP integrity checks.
+
 Original project by Yile Wang and contributors; original license retained.
