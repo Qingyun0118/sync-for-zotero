@@ -28,3 +28,7 @@ and ZIP integrity checks pass. It refuses to reuse a tag for a different commit.
 
 The maintenance guide uses main-branch publishing by default and avoids a
 second manual tag push for the same version.
+
+Use this extension with [Qingyun-maintained Zotero v3.9.12](https://github.com/Qingyun0118/llm-for-zotero/releases/tag/v3.9.12).
+Keep the existing unpacked extension directory, reload it in the browser, and
+refresh the chat page to activate the extraction and title synchronization fixes.
